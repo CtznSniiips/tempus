@@ -199,8 +199,8 @@ public class ReplayGainUtil {
         List<ReplayGain> gains = gainDataMap.get(nextItem.mediaId);
         if (gains == null) return;  // prefetch hasn't completed — nothing we can do
 
-        float gain = resolveGain(player, gains);
-        float peak = resolvePeak(player, gains);
+        float gain = resolveGainForIndex(player, gains, nextIndex);
+        float peak = resolvePeakForIndex(player, gains, nextIndex);
         Log.d(TAG, "preApplyNextTrackGain: applying gain for upcoming "
                 + nextItem.mediaId + " gain=" + gain + " peak=" + peak
                 + " (remaining=" + remaining + "ms)");
@@ -236,8 +236,9 @@ public class ReplayGainUtil {
         List<ReplayGain> gains = gainDataMap.get(mediaItem.mediaId);
         if (gains != null) {
             // Prefetch completed before this transition — apply immediately with no gap.
-            float gain = resolveGain(player, gains);
-            float peak = resolvePeak(player, gains);
+            int currentIndex = player.getCurrentMediaItemIndex();
+            float gain = resolveGainForIndex(player, gains, currentIndex);
+            float peak = resolvePeakForIndex(player, gains, currentIndex);
             Log.d(TAG, "applyGain: cache hit for " + mediaItem.mediaId
                     + " gain=" + gain + " peak=" + peak);
             setReplayGain(player, gain, peak);
@@ -282,7 +283,11 @@ public class ReplayGainUtil {
             prefetchedIds.add(currentItem.mediaId);
         }
 
-        setReplayGain(player, resolveGain(player, gains), resolvePeak(player, gains));
+        int currentIndex = player.getCurrentMediaItemIndex();
+        setReplayGain(
+                player,
+                resolveGainForIndex(player, gains, currentIndex),
+                resolvePeakForIndex(player, gains, currentIndex));
     }
 
     // -------------------------------------------------------------------------
@@ -392,7 +397,7 @@ public class ReplayGainUtil {
     // Gain / peak resolution
     // -------------------------------------------------------------------------
 
-    private static float resolveGain(Player player, List<ReplayGain> gains) {
+    private static float resolveGainForIndex(Player player, List<ReplayGain> gains, int mediaItemIndex) {
         if (Objects.equals(Preferences.getReplayGainMode(), "disabled")
                 || gains == null || gains.isEmpty()) return 0f;
 
@@ -400,7 +405,7 @@ public class ReplayGainUtil {
         switch (mode) {
             case "track": return resolveTrackGain(gains);
             case "album": return resolveAlbumGain(gains);
-            case "auto":  return areTracksConsecutive(player)
+            case "auto":  return areTracksConsecutiveForIndex(player, mediaItemIndex)
                                  ? resolveAlbumGain(gains) : resolveTrackGain(gains);
             default:      return 0f;
         }
@@ -419,13 +424,13 @@ public class ReplayGainUtil {
         return album != 0f ? album : resolveTrackGain(gains);
     }
 
-    private static float resolvePeak(Player player, List<ReplayGain> gains) {
+    private static float resolvePeakForIndex(Player player, List<ReplayGain> gains, int mediaItemIndex) {
         if (Objects.equals(Preferences.getReplayGainMode(), "disabled")
                 || gains == null || gains.isEmpty()) return 0f;
 
         boolean useAlbum = Objects.equals(Preferences.getReplayGainMode(), "album")
                 || (Objects.equals(Preferences.getReplayGainMode(), "auto")
-                    && areTracksConsecutive(player));
+                    && areTracksConsecutiveForIndex(player, mediaItemIndex));
 
         if (useAlbum) {
             float primary   = gains.get(0).getAlbumPeak();
@@ -439,15 +444,21 @@ public class ReplayGainUtil {
         return primary != 0f ? primary : secondary;
     }
 
-    private static boolean areTracksConsecutive(Player player) {
-        MediaItem current = player.getCurrentMediaItem();
-        int prevIdx = player.getPreviousMediaItemIndex();
-        MediaItem prev = prevIdx == C.INDEX_UNSET ? null : player.getMediaItemAt(prevIdx);
-        return current != null && prev != null
-                && current.mediaMetadata.albumTitle != null
-                && prev.mediaMetadata.albumTitle != null
-                && prev.mediaMetadata.albumTitle.toString()
-                       .equals(current.mediaMetadata.albumTitle.toString());
+    private static boolean areTracksConsecutiveForIndex(Player player, int mediaItemIndex) {
+        if (mediaItemIndex == C.INDEX_UNSET || mediaItemIndex <= 0
+                || mediaItemIndex >= player.getMediaItemCount()) {
+            return false;
+        }
+
+        MediaItem current = player.getMediaItemAt(mediaItemIndex);
+        MediaItem previous = player.getMediaItemAt(mediaItemIndex - 1);
+        if (current == null || previous == null) return false;
+        if (current.mediaMetadata.albumTitle == null || previous.mediaMetadata.albumTitle == null) {
+            return false;
+        }
+
+        return previous.mediaMetadata.albumTitle.toString()
+                .equals(current.mediaMetadata.albumTitle.toString());
     }
 
     // -------------------------------------------------------------------------
