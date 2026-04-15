@@ -65,6 +65,7 @@ open class BaseMediaService : MediaLibraryService() {
     protected lateinit var mediaLibrarySession: MediaLibrarySession
     private lateinit var networkCallback: CustomNetworkCallback
     private lateinit var equalizerManager: EqualizerManager
+    private lateinit var replayGainAudioProcessor: ReplayGainAudioProcessor
     private val widgetUpdateHandler = Handler(Looper.getMainLooper())
     private var widgetUpdateScheduled = false
     private val widgetUpdateRunnable = object : Runnable {
@@ -411,7 +412,6 @@ open class BaseMediaService : MediaLibraryService() {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 Log.d(TAG, "onAudioSessionIdChanged")
                 attachEqualizerIfPossible(audioSessionId)
-                ReplayGainUtil.attachAudioSession(audioSessionId)
             }
         })
         if (player.isPlaying) {
@@ -487,6 +487,8 @@ open class BaseMediaService : MediaLibraryService() {
     }
 
     private fun initializeExoPlayer() {
+        replayGainAudioProcessor = ReplayGainAudioProcessor()
+        ReplayGainUtil.setAudioProcessor(replayGainAudioProcessor)
         exoplayer = ExoPlayer.Builder(this)
             .setRenderersFactory(getRenderersFactory())
             .setMediaSourceFactory(getMediaSourceFactory())
@@ -760,7 +762,8 @@ open class BaseMediaService : MediaLibraryService() {
         return attached
     }
 
-    private fun getRenderersFactory() = DownloadUtil.buildRenderersFactory(this, false)
+    private fun getRenderersFactory() =
+        DownloadUtil.buildRenderersFactory(this, false, arrayOf(replayGainAudioProcessor))
 
     private fun getMediaSourceFactory(): MediaSource.Factory = DynamicMediaSourceFactory(this)
 

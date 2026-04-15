@@ -1,6 +1,5 @@
 package com.cappielloantonio.tempo.util;
 
-import android.media.audiofx.LoudnessEnhancer;
 import android.util.Log;
 
 import androidx.annotation.OptIn;
@@ -53,46 +52,25 @@ public class ReplayGainUtil {
     private static final ExecutorService prefetchExecutor =
             Executors.newFixedThreadPool(2);
 
-    // LoudnessEnhancer lets us apply positive gains (above unity) that
-    // player.setVolume() cannot reach — it operates directly on the audio session.
-    private static LoudnessEnhancer loudnessEnhancer;
+    private static volatile ReplayGainAudioProcessor replayGainAudioProcessor;
 
     // -------------------------------------------------------------------------
     // Lifecycle
     // -------------------------------------------------------------------------
 
-    /**
-     * Called from BaseMediaService.onAudioSessionIdChanged().
-     * Re-creates the LoudnessEnhancer bound to the new audio session.
-     */
-    public static void attachAudioSession(int audioSessionId) {
-        releaseEnhancer();
-        if (audioSessionId == 0 || audioSessionId == C.AUDIO_SESSION_ID_UNSET) return;
-        try {
-            loudnessEnhancer = new LoudnessEnhancer(audioSessionId);
-            loudnessEnhancer.setEnabled(true);
-        } catch (Exception e) {
-            Log.w(TAG, "LoudnessEnhancer unavailable: " + e.getMessage());
-            loudnessEnhancer = null;
-        }
+    public static void setAudioProcessor(ReplayGainAudioProcessor processor) {
+        replayGainAudioProcessor = processor;
     }
 
     /** Called from BaseMediaService.onDestroy(). */
     public static void release() {
-        releaseEnhancer();
+        replayGainAudioProcessor = null;
         gainDataMap.clear();
         prefetchedIds.clear();
         preAppliedForMediaId = null;
         // Do NOT shutdown the executor — it is a static pool shared across
         // service lifecycles.  Clearing the sets is enough: the next onCreate
         // will re-submit prefetch work normally.
-    }
-
-    private static void releaseEnhancer() {
-        if (loudnessEnhancer != null) {
-            try { loudnessEnhancer.release(); } catch (Exception ignored) {}
-            loudnessEnhancer = null;
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -473,7 +451,7 @@ public class ReplayGainUtil {
     }
 
     // -------------------------------------------------------------------------
-    // Volume / LoudnessEnhancer application
+    // Gain application via ReplayGainAudioProcessor
     // -------------------------------------------------------------------------
 
     private static void setReplayGain(Player player, float gain, float peak) {
@@ -487,27 +465,9 @@ public class ReplayGainUtil {
 
         totalGain = Math.max(-60f, Math.min(15f, totalGain));
 
-        // player.setVolume() is capped at 1.0; amplify via LoudnessEnhancer instead.
-        if (totalGain <= 0f) {
-            player.setVolume((float) Math.pow(10.0, totalGain / 20.0));
-            setLoudnessEnhancerGain(0f);
-        } else {
-            player.setVolume(1.0f);
-            setLoudnessEnhancerGain(totalGain);
-        }
-    }
-
-    private static void setLoudnessEnhancerGain(float gainDb) {
-        if (loudnessEnhancer == null) return;
-        try {
-            if (gainDb <= 0f) {
-                loudnessEnhancer.setTargetGain(0);
-            } else {
-                loudnessEnhancer.setTargetGain((int) (gainDb * 100f));
-                loudnessEnhancer.setEnabled(true);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to set LoudnessEnhancer gain: " + e.getMessage());
+        ReplayGainAudioProcessor processor = replayGainAudioProcessor;
+        if (processor != null) {
+            processor.setPendingGainDb(totalGain);
         }
     }
 }

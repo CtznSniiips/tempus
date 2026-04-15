@@ -19,8 +19,11 @@ import androidx.media3.datasource.cache.NoOpCacheEvictor;
 import androidx.media3.datasource.cache.SimpleCache;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.RenderersFactory;
+import androidx.media3.exoplayer.audio.AudioSink;
+import androidx.media3.exoplayer.audio.DefaultAudioSink;
 import androidx.media3.exoplayer.offline.DownloadManager;
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper;
+import androidx.media3.common.audio.AudioProcessor;
 
 import com.cappielloantonio.tempo.service.DownloaderManager;
 
@@ -59,12 +62,33 @@ public final class DownloadUtil {
     }
 
     public static RenderersFactory buildRenderersFactory(Context context, boolean preferExtensionRenderer) {
+        return buildRenderersFactory(context, preferExtensionRenderer, new AudioProcessor[0]);
+    }
+
+    public static RenderersFactory buildRenderersFactory(
+            Context context,
+            boolean preferExtensionRenderer,
+            AudioProcessor[] audioProcessors
+    ) {
         @DefaultRenderersFactory.ExtensionRendererMode int extensionRendererMode =
                 useExtensionRenderers()
                         ? (preferExtensionRenderer ? DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER : DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
                         : DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF;
 
-        return new DefaultRenderersFactory(context.getApplicationContext()).setExtensionRendererMode(extensionRendererMode);
+        return new DefaultRenderersFactory(context.getApplicationContext()) {
+            @Override
+            protected AudioSink buildAudioSink(
+                    Context context,
+                    boolean enableFloatOutput,
+                    boolean enableAudioTrackPlaybackParams
+            ) {
+                return new DefaultAudioSink.Builder(context)
+                        .setAudioProcessors(audioProcessors)
+                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .build();
+            }
+        }.setExtensionRendererMode(extensionRendererMode);
     }
 
     public static synchronized DataSource.Factory getHttpDataSourceFactory() {
