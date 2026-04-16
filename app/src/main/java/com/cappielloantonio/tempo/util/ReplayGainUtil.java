@@ -2,6 +2,7 @@ package com.cappielloantonio.tempo.util;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Bundle;
 import android.util.Log;
 
 import androidx.annotation.OptIn;
@@ -73,17 +74,57 @@ public class ReplayGainUtil {
         for (int i = 0; i < player.getMediaItemCount(); i++) {
             MediaItem item = player.getMediaItemAt(i);
 
-            if (item.mediaId == null || item.localConfiguration == null) continue;
+            if (item.mediaId == null) continue;
 
             String mediaType = item.mediaMetadata.extras != null
                     ? item.mediaMetadata.extras.getString("type") : null;
             if (Constants.MEDIA_TYPE_RADIO.equals(mediaType)) continue;
             if (item.mediaId.startsWith("ir-")) continue;
 
+            if (primeGainFromItemExtras(item)) continue;
+
+            if (item.localConfiguration == null) continue;
+
             if (!prefetchedIds.add(item.mediaId)) continue;
 
             submitPrefetch(item);
         }
+    }
+
+    private static boolean primeGainFromItemExtras(MediaItem item) {
+        if (item == null || item.mediaId == null) return false;
+
+        Bundle extras = item.mediaMetadata.extras != null
+                ? item.mediaMetadata.extras
+                : item.requestMetadata.extras;
+        if (extras == null) return false;
+
+        if (!extras.containsKey("replayGainTrackGain")
+                && !extras.containsKey("replayGainTrackPeak")
+                && !extras.containsKey("replayGainAlbumGain")
+                && !extras.containsKey("replayGainAlbumPeak")) {
+            return false;
+        }
+
+        ReplayGain openSubsonicGains = new ReplayGain();
+        if (extras.containsKey("replayGainTrackGain"))
+            openSubsonicGains.setTrackGain(extras.getFloat("replayGainTrackGain"));
+        if (extras.containsKey("replayGainTrackPeak"))
+            openSubsonicGains.setTrackPeak(extras.getFloat("replayGainTrackPeak"));
+        if (extras.containsKey("replayGainAlbumGain"))
+            openSubsonicGains.setAlbumGain(extras.getFloat("replayGainAlbumGain"));
+        if (extras.containsKey("replayGainAlbumPeak"))
+            openSubsonicGains.setAlbumPeak(extras.getFloat("replayGainAlbumPeak"));
+
+        List<ReplayGain> gains = new ArrayList<>();
+        gains.add(openSubsonicGains);
+        gains.add(new ReplayGain());
+        gainDataMap.put(item.mediaId, gains);
+        prefetchedIds.add(item.mediaId);
+
+        Log.d(TAG, "Primed gain from OpenSubsonic extras for " + item.mediaId
+                + " trackGain=" + openSubsonicGains.getTrackGain());
+        return true;
     }
 
     private static void submitPrefetch(MediaItem item) {

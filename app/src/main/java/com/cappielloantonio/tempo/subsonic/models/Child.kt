@@ -84,5 +84,7 @@ open class Child @JvmOverloads constructor(
     @ColumnInfo(name = "original_width")
     var originalWidth: Int? = null,
     @ColumnInfo(name = "original_height")
-    var originalHeight: Int? = null
+    var originalHeight: Int? = null,
+    @SerializedName("replayGain")
+    var replayGain: OpenSubsonicReplayGain? = null
 ) : Parcelable

@@ -21,6 +21,7 @@ import com.cappielloantonio.tempo.provider.AlbumArtContentProvider;
 import com.cappielloantonio.tempo.repository.DownloadRepository;
 import com.cappielloantonio.tempo.subsonic.models.Child;
 import com.cappielloantonio.tempo.subsonic.models.InternetRadioStation;
+import com.cappielloantonio.tempo.subsonic.models.OpenSubsonicReplayGain;
 import com.cappielloantonio.tempo.subsonic.models.PodcastEpisode;
 import com.google.common.collect.ImmutableList;
 
@@ -90,6 +91,14 @@ public class MappingUtil {
             bundle.putInt("originalWidth", media.getOriginalWidth() != null ? media.getOriginalWidth() : 0);
             bundle.putInt("originalHeight", media.getOriginalHeight() != null ? media.getOriginalHeight() : 0);
             bundle.putString("uri", uri.toString());
+
+            if (media.getReplayGain() != null) {
+                OpenSubsonicReplayGain replayGain = media.getReplayGain();
+                if (replayGain.getTrackGain() != null) bundle.putFloat("replayGainTrackGain", replayGain.getTrackGain());
+                if (replayGain.getTrackPeak() != null) bundle.putFloat("replayGainTrackPeak", replayGain.getTrackPeak());
+                if (replayGain.getAlbumGain() != null) bundle.putFloat("replayGainAlbumGain", replayGain.getAlbumGain());
+                if (replayGain.getAlbumPeak() != null) bundle.putFloat("replayGainAlbumPeak", replayGain.getAlbumPeak());
+            }
             
             bundle.putString("assetLinkSong", media.getId() != null ? AssetLinkUtil.buildLink(AssetLinkUtil.TYPE_SONG, media.getId()) : null);
             bundle.putString("assetLinkAlbum", media.getAlbumId() != null ? AssetLinkUtil.buildLink(AssetLinkUtil.TYPE_ALBUM, media.getAlbumId()) : null);
@@ -376,6 +385,18 @@ public class MappingUtil {
             if (extras.containsKey("bookmarkPosition")) child.setBookmarkPosition(extras.getLong("bookmarkPosition"));
             if (extras.containsKey("originalWidth")) child.setOriginalWidth(extras.getInt("originalWidth"));
             if (extras.containsKey("originalHeight")) child.setOriginalHeight(extras.getInt("originalHeight"));
+
+            if (extras.containsKey("replayGainTrackGain")
+                    || extras.containsKey("replayGainTrackPeak")
+                    || extras.containsKey("replayGainAlbumGain")
+                    || extras.containsKey("replayGainAlbumPeak")) {
+                OpenSubsonicReplayGain replayGain = new OpenSubsonicReplayGain();
+                if (extras.containsKey("replayGainTrackGain")) replayGain.setTrackGain(extras.getFloat("replayGainTrackGain"));
+                if (extras.containsKey("replayGainTrackPeak")) replayGain.setTrackPeak(extras.getFloat("replayGainTrackPeak"));
+                if (extras.containsKey("replayGainAlbumGain")) replayGain.setAlbumGain(extras.getFloat("replayGainAlbumGain"));
+                if (extras.containsKey("replayGainAlbumPeak")) replayGain.setAlbumPeak(extras.getFloat("replayGainAlbumPeak"));
+                child.setReplayGain(replayGain);
+            }
 
             long createdTime = extras.getLong("created", 0);
             if (createdTime != 0) child.setCreated(new Date(createdTime));
