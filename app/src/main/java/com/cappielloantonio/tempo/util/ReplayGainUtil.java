@@ -20,9 +20,12 @@ import androidx.media3.extractor.metadata.id3.TextInformationFrame;
 
 import com.cappielloantonio.tempo.App;
 import com.cappielloantonio.tempo.model.ReplayGain;
+import com.cappielloantonio.tempo.model.ReplayGainCache;
+import com.cappielloantonio.tempo.repository.ReplayGainCacheRepository;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -43,6 +46,8 @@ public class ReplayGainUtil {
             new ConcurrentHashMap<>();
 
     private static final Set<String> prefetchedIds = ConcurrentHashMap.newKeySet();
+    private static final ReplayGainCacheRepository replayGainCacheRepository =
+            new ReplayGainCacheRepository();
 
     private static final ExecutorService prefetchExecutor =
             Executors.newFixedThreadPool(2);
@@ -70,6 +75,7 @@ public class ReplayGainUtil {
         if (Objects.equals(Preferences.getReplayGainMode(), "disabled")) return;
 
         playerRef = new WeakReference<>(player);
+        seedFromPersistentCache(player);
 
         for (int i = 0; i < player.getMediaItemCount(); i++) {
             MediaItem item = player.getMediaItemAt(i);
@@ -121,6 +127,7 @@ public class ReplayGainUtil {
         gains.add(new ReplayGain());
         gainDataMap.put(item.mediaId, gains);
         prefetchedIds.add(item.mediaId);
+        persistGains(item.mediaId, gains);
 
         Log.d(TAG, "Primed gain from OpenSubsonic extras for " + item.mediaId
                 + " trackGain=" + openSubsonicGains.getTrackGain());
@@ -139,6 +146,7 @@ public class ReplayGainUtil {
                 List<Metadata> metadataList = extractMetadata(trackGroups);
                 List<ReplayGain> gains = getReplayGains(metadataList);
                 gainDataMap.put(item.mediaId, gains);
+                persistGains(item.mediaId, gains);
                 Log.d(TAG, "Prefetched " + item.mediaId
                         + " trackGain=" + resolveTrackGain(gains));
 
@@ -182,6 +190,9 @@ public class ReplayGainUtil {
         }
 
         List<ReplayGain> gains = gainDataMap.get(mediaItem.mediaId);
+        if (gains == null && primeGainFromItemExtras(mediaItem)) {
+            gains = gainDataMap.get(mediaItem.mediaId);
+        }
         if (gains != null) {
             float gain = resolveGain(player, gains);
             float peak = resolvePeak(player, gains);
@@ -192,7 +203,8 @@ public class ReplayGainUtil {
             audioProcessor.setGainImmediate(totalGain);
         } else {
             Log.d(TAG, "applyGain: cache miss for " + mediaItem.mediaId
-                    + ", holding current gain until onTracksChanged");
+                    + ", applying 0 dB fallback until onTracksChanged");
+            audioProcessor.setGainImmediate(computeTotalGain(0f, 0f));
         }
 
         queuePendingForNextTrack(player);
@@ -208,6 +220,7 @@ public class ReplayGainUtil {
         if (currentItem != null && currentItem.mediaId != null) {
             gainDataMap.put(currentItem.mediaId, gains);
             prefetchedIds.add(currentItem.mediaId);
+            persistGains(currentItem.mediaId, gains);
         }
 
         float gain = resolveGain(player, gains);
@@ -224,7 +237,16 @@ public class ReplayGainUtil {
         if (nextItem == null || nextItem.mediaId == null) return;
 
         List<ReplayGain> gains = gainDataMap.get(nextItem.mediaId);
-        if (gains == null) return;
+        if (gains == null && primeGainFromItemExtras(nextItem)) {
+            gains = gainDataMap.get(nextItem.mediaId);
+        }
+
+        if (gains == null) {
+            // Ensure first samples of the next track do not inherit previous-track gain
+            // when we still don't have ReplayGain metadata at stream boundary.
+            audioProcessor.setPendingGain(computeTotalGain(0f, 0f));
+            return;
+        }
 
         float totalGain = computeTotalGain(
                 resolveGainForNextTrack(player, gains),
@@ -400,6 +422,60 @@ public class ReplayGainUtil {
         float primary   = gains.get(0).getTrackPeak();
         float secondary = gains.get(1).getTrackPeak();
         return primary != 0f ? primary : secondary;
+    }
+
+    private static void seedFromPersistentCache(Player player) {
+        List<String> missingIds = new ArrayList<>();
+        for (int i = 0; i < player.getMediaItemCount(); i++) {
+            MediaItem item = player.getMediaItemAt(i);
+            if (item == null || item.mediaId == null) continue;
+            if (gainDataMap.containsKey(item.mediaId)) continue;
+            missingIds.add(item.mediaId);
+        }
+        if (missingIds.isEmpty()) return;
+
+        List<ReplayGainCache> cachedRows = replayGainCacheRepository.getMany(missingIds);
+        if (cachedRows == null) cachedRows = Collections.emptyList();
+
+        for (ReplayGainCache row : cachedRows) {
+            if (row == null || row.getMediaId() == null) continue;
+            ReplayGain persisted = new ReplayGain();
+            persisted.setTrackGain(row.getTrackGain());
+            persisted.setAlbumGain(row.getAlbumGain());
+            persisted.setTrackPeak(row.getTrackPeak());
+            persisted.setAlbumPeak(row.getAlbumPeak());
+
+            List<ReplayGain> gains = new ArrayList<>();
+            gains.add(persisted);
+            gains.add(new ReplayGain());
+            gainDataMap.put(row.getMediaId(), gains);
+            prefetchedIds.add(row.getMediaId());
+        }
+    }
+
+    private static void persistGains(String mediaId, List<ReplayGain> gains) {
+        if (mediaId == null || gains == null || gains.isEmpty()) return;
+
+        ReplayGainCache cacheRow = new ReplayGainCache(mediaId);
+        cacheRow.setTrackGain(resolveTrackGain(gains));
+        cacheRow.setAlbumGain(resolveAlbumGain(gains));
+        cacheRow.setTrackPeak(resolveTrackPeak(gains));
+        cacheRow.setAlbumPeak(resolveAlbumPeak(gains));
+        cacheRow.setUpdatedAt(System.currentTimeMillis());
+        replayGainCacheRepository.insert(cacheRow);
+    }
+
+    private static float resolveTrackPeak(List<ReplayGain> gains) {
+        float primary = gains.get(0).getTrackPeak();
+        float secondary = gains.get(1).getTrackPeak();
+        return primary != 0f ? primary : secondary;
+    }
+
+    private static float resolveAlbumPeak(List<ReplayGain> gains) {
+        float primary = gains.get(0).getAlbumPeak();
+        float secondary = gains.get(1).getAlbumPeak();
+        float album = primary != 0f ? primary : secondary;
+        return album != 0f ? album : resolveTrackPeak(gains);
     }
 
     /** Checks if the current and previous tracks share the same album. */
