@@ -237,7 +237,16 @@ public class ReplayGainUtil {
         if (nextItem == null || nextItem.mediaId == null) return;
 
         List<ReplayGain> gains = gainDataMap.get(nextItem.mediaId);
-        if (gains == null) return;
+        if (gains == null && primeGainFromItemExtras(nextItem)) {
+            gains = gainDataMap.get(nextItem.mediaId);
+        }
+
+        if (gains == null) {
+            // Ensure first samples of the next track do not inherit previous-track gain
+            // when we still don't have ReplayGain metadata at stream boundary.
+            audioProcessor.setPendingGain(computeTotalGain(0f, 0f));
+            return;
+        }
 
         float totalGain = computeTotalGain(
                 resolveGainForNextTrack(player, gains),
