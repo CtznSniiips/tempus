@@ -81,6 +81,18 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
         hasPendingFlushGain = false;
     }
 
+    /**
+     * Clears transient end-of-stream state after an in-track seek.
+     *
+     * <p>ExoPlayer can queue EOS callbacks ahead of the playhead. If the user
+     * then seeks within the same item, that stale EOS state must not be allowed
+     * to promote a pending next-track gain onto the current track.
+     */
+    public void onInTrackSeek() {
+        endOfStreamPending = false;
+        configAfterEos = false;
+    }
+
     @Override
     protected AudioFormat onConfigure(AudioFormat inputAudioFormat)
             throws UnhandledAudioFormatException {

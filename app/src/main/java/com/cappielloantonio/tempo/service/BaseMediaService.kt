@@ -373,6 +373,7 @@ open class BaseMediaService : MediaLibraryService() {
                 // wrong volume level after the seek completes.
                 if (reason == Player.DISCONTINUITY_REASON_SEEK &&
                     oldPosition.mediaItemIndex == newPosition.mediaItemIndex) {
+                    ReplayGainUtil.onInTrackSeek()
                     ReplayGainUtil.reapplyCurrentTrackGain(player)
                 }
 

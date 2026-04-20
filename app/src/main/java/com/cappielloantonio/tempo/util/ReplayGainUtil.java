@@ -60,6 +60,10 @@ public class ReplayGainUtil {
         return audioProcessor;
     }
 
+    public static void onInTrackSeek() {
+        audioProcessor.onInTrackSeek();
+    }
+
     public static void release() {
         gainDataMap.clear();
         prefetchedIds.clear();
