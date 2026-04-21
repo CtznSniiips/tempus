@@ -31,22 +31,52 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build 64-bit Debug APKs
+      - name: Build Media3 FFmpeg extension (16 KB compliant)
         run: |
-          bash ./gradlew assembleTempusDebug
-          bash ./gradlew assembleDegoogledDebug
-
-      - name: Prepare APKs
-        run: |
-          mkdir -p prerelease-artifacts
-          
-          # Copy and rename Tempus APK with version from tag
-          cp app/build/outputs/apk/tempus/debug/*arm64-v8a*.apk ./prerelease-artifacts/app-tempus-arm64-v8a-${{ github.ref_name }}.apk 2>/dev/null || true
-          
-          # Copy and rename Degoogled APK with version from tag
-          cp app/build/outputs/apk/degoogled/debug/*arm64-v8a*.apk ./prerelease-artifacts/app-degoogled-arm64-v8a-${{ github.ref_name }}.apk 2>/dev/null || true
-          
-          echo "Prepared APKs with version: ${{ github.ref_name }}"
+          set -e
+      
+          echo "Cloning Media3..."
+          git clone https://github.com/androidx/media.git media3
+          cd media3
+      
+          echo "Checking out stable release..."
+          git checkout androidx-main
+      
+          echo "Patching FFmpeg build flags for 16KB page size..."
+      
+          # Find and patch ffmpeg build scripts
+          find . -type f -name "*.sh" -exec sed -i 's/^EXTRA_LDFLAGS=.*/EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"/' {} \; || true
+      
+          # Fallback: inject flags if not present
+          find . -type f -name "*.sh" -exec sed -i 's/--enable-shared/& --extra-ldflags="-Wl,-z,max-page-size=16384"/' {} \; || true
+      
+          echo "Building FFmpeg extension AAR..."
+          ./gradlew :libraries:decoder_ffmpeg:assembleRelease
+      
+          echo "Copying AAR to app libs..."
+          cd ..
+      
+          mkdir -p app/libs
+          cp media3/libraries/decoder_ffmpeg/build/outputs/aar/*.aar app/libs/lib-decoder-ffmpeg-release.aar
+      
+          echo "FFmpeg AAR ready and replaced."
+      
+            - name: Build 64-bit Debug APKs
+              run: |
+                bash ./gradlew assembleTempusDebug
+                bash ./gradlew assembleDegoogledDebug
+      
+            - name: Prepare APKs
+              run: |
+                mkdir -p prerelease-artifacts
+                
+                # Copy and rename Tempus APK with version from tag
+                cp app/build/outputs/apk/tempus/debug/*arm64-v8a*.apk ./prerelease-artifacts/app-tempus-arm64-v8a-${{ github.ref_name }}.apk 2>/dev/null || true
+                
+                # Copy and rename Degoogled APK with version from tag
+                cp app/build/outputs/apk/degoogled/debug/*arm64-v8a*.apk ./prerelease-artifacts/app-degoogled-arm64-v8a-${{ github.ref_name }}.apk 2>/dev/null || true
+                
+                echo "Prepared APKs with version: ${{ github.ref_name }}"
 
       - name: Create Prerelease
         uses: softprops/action-gh-release@v1
