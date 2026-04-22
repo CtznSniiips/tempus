@@ -362,8 +362,15 @@ open class BaseMediaService : MediaLibraryService() {
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
-                Log.d(TAG, "onPositionDiscontinuity")
+                Log.d(TAG, "onPositionDiscontinuity reason=$reason old=${oldPosition.mediaItemIndex} new=${newPosition.mediaItemIndex}")
                 super.onPositionDiscontinuity(oldPosition, newPosition, reason)
+
+                // Re-apply gain whenever we stay on the same track for any reason
+                // except an automatic transition to the next track.
+                if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION &&
+                    oldPosition.mediaItemIndex == newPosition.mediaItemIndex) {
+                    ReplayGainUtil.reapplyCurrentTrackGain(player)
+                }
 
                 if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
                     if (oldPosition.mediaItem?.mediaMetadata?.extras?.getString("type") == Constants.MEDIA_TYPE_MUSIC) {

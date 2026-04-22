@@ -1,5 +1,6 @@
 package com.cappielloantonio.tempo.util;
 
+import android.util.Log;
 import androidx.annotation.OptIn;
 import androidx.media3.common.C;
 import androidx.media3.common.audio.AudioProcessor;
@@ -20,12 +21,15 @@ import java.nio.ByteOrder;
 @OptIn(markerClass = UnstableApi.class)
 public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
 
+    private static final String TAG = "RGAudioProcessor";
     private static final float RAMP_DURATION_SECONDS = 0.01f; // 10 ms
 
     private volatile float targetGainLinear = 1.0f;
 
     private volatile float pendingFlushGainLinear = 1.0f;
 
+    private volatile float baselineGainLinear = 1.0f;
+    
     private volatile boolean hasPendingFlushGain = false;
 
     private float activeGainLinear = 1.0f;
@@ -49,14 +53,36 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
     // to false in onFlush / onReset.
     private boolean hasProcessedAnyInput = false;
 
+    private boolean endOfStreamPending = false;
+
+    // Set to true in onConfigure() and cleared in onFlush() / onReset().
+    // onConfigure() is only called by ExoPlayer when the audio format
+    // actually changes — which happens for format-change gapless track
+    // transitions, but NOT for seeks within the same track. Using this as
+    // an additional gate in onFlush() ensures we never promote a pending
+    // gain during a seek, even if endOfStreamPending was left true by the
+    // decoder running ahead of the playhead before the seek was issued.
+    // Set to true in onConfigure() only when endOfStreamPending is already
+    // true — the exact signature of a format-changing gapless transition.
+    // See full explanation in onConfigure() and onFlush() below.
+    private boolean configAfterEos = false;
+
     public void setPendingGain(float gainDb) {
         pendingFlushGainLinear = dbToLinear(gainDb);
         hasPendingFlushGain = true;
     }
 
     public void setGainImmediate(float gainDb) {
-        targetGainLinear = dbToLinear(gainDb);
+        float linear = dbToLinear(gainDb);
+        float prevTarget = targetGainLinear;
+        float prevActive = activeGainLinear;
+        targetGainLinear = linear;
+        baselineGainLinear = linear;
         hasPendingFlushGain = false;
+        Log.d(TAG, "setGainImmediate: " + gainDb + " dB -> linear=" + linear
+                + " | was target=" + prevTarget + " active=" + prevActive
+                + " baseline now=" + linear
+                + " | thread=" + Thread.currentThread().getName());
     }
 
     public void clearPendingGain() {
@@ -72,53 +98,75 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
         }
         rampTotalFrames = Math.max(1,
                 (int) (inputAudioFormat.sampleRate * RAMP_DURATION_SECONDS));
-        return inputAudioFormat;   
+        // Only arm the gapless-promotion flag when an end-of-stream is already
+        // pending. This is the signature of a format-changing gapless transition:
+        //
+        //   onQueueEndOfStream()  ← decoder finished Track A (endOfStreamPending=true)
+        //   onConfigure()         ← new format arrives for Track B → configAfterEos=true
+        //   onFlush()             ← sink resets for new format    → promotion fires
+        //
+        // A post-seek onConfigure() (some DefaultAudioSink versions re-issue
+        // configure() after flush()) always fires when endOfStreamPending is
+        // already false (onFlush() resets it before any new configure()), so
+        // configAfterEos is never set and the next flush will not promote.
+        if (endOfStreamPending) {
+            configAfterEos = true;
+        }
+        return inputAudioFormat;
     }
 
     @Override
     protected void onFlush() {
-        // Only promote the pending gain if this flush represents a real
-        // mid-stream boundary (some samples have already flowed through
-        // the processor). The initial configure/flush that runs before
-        // the first track starts playing must NOT steal the pending gain
-        // that was queued for the next track - doing so applies track
-        // B's gain to track A.
-        if (hasPendingFlushGain && hasProcessedAnyInput) {
+        Log.d(TAG, "onFlush ENTER: active=" + activeGainLinear
+                + " target=" + targetGainLinear
+                + " baseline=" + baselineGainLinear
+                + " hasPending=" + hasPendingFlushGain
+                + " pendingVal=" + pendingFlushGainLinear
+                + " hasProcessed=" + hasProcessedAnyInput
+                + " eosP=" + endOfStreamPending
+                + " configAfterEos=" + configAfterEos
+                + " ramping=" + ramping
+                + " | thread=" + Thread.currentThread().getName());
+        if (hasPendingFlushGain && hasProcessedAnyInput
+                && endOfStreamPending && configAfterEos) {
             activeGainLinear = pendingFlushGainLinear;
             targetGainLinear = pendingFlushGainLinear;
             hasPendingFlushGain = false;
             ramping = false;
+            Log.d(TAG, "onFlush: GAPLESS PROMOTION -> active/target=" + activeGainLinear);
+        } else {
+            Log.d(TAG, "onFlush: SEEK/STARTUP branch, restoring to baseline=" + baselineGainLinear
+                    + " (was active=" + activeGainLinear + ")");
+            activeGainLinear = baselineGainLinear;
+            targetGainLinear = baselineGainLinear;
+            ramping = false;
+            hasPendingFlushGain = false;
         }
+        endOfStreamPending = false;
         hasProcessedAnyInput = false;
+        configAfterEos = false;
     }
 
-    /**
-     * Called when the current stream has no more input.  For gapless
-     * transitions with the same audio format, media3 1.8's DefaultAudioSink
-     * does NOT call flush() between tracks - only queueEndOfStream().
-     * Activating the pending gain here (in addition to onFlush) ensures the
-     * next track's first samples get the correct gain in queueInput, since
-     * onQueueEndOfStream fires at the decoder stream boundary BEFORE the
-     * next track's samples enter the pipeline.
-     */
     @Override
     protected void onQueueEndOfStream() {
-        if (hasPendingFlushGain) {
-            activeGainLinear = pendingFlushGainLinear;
-            targetGainLinear = pendingFlushGainLinear;
-            hasPendingFlushGain = false;
-            ramping = false;
-        }
+        endOfStreamPending = true;
     }
 
     @Override
     protected void onReset() {
-        activeGainLinear = 1.0f;
-        targetGainLinear = 1.0f;
+        Log.d(TAG, "onReset CALLED: active=" + activeGainLinear
+                + " target=" + targetGainLinear
+                + " baseline=" + baselineGainLinear
+                + " | thread=" + Thread.currentThread().getName());
+        activeGainLinear = baselineGainLinear;
+        targetGainLinear = baselineGainLinear;
         pendingFlushGainLinear = 1.0f;
         hasPendingFlushGain = false;
+        endOfStreamPending = false;
+        configAfterEos = false;
         ramping = false;
         hasProcessedAnyInput = false;
+        Log.d(TAG, "onReset EXIT: active/target reset to baseline=" + baselineGainLinear);
     }
 
     @Override
@@ -131,8 +179,18 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
         // consume pending) rather than the initial startup flush.
         hasProcessedAnyInput = true;
 
+        // NOTE: Same-format gapless gain promotion was intentionally removed from
+        // queueInput. On cached streams the decoder runs far ahead of playback,
+        // so endOfStreamPending becomes true long before audio actually reaches
+        // the track boundary. Triggering the promotion here caused a volume spike
+        // mid-track after every seek. Gain changes at track boundaries are now
+        // handled exclusively by applyGain() called from onMediaItemTransition,
+        // which fires at the correct playback time.
+
         float target = targetGainLinear;
         if (!ramping && Math.abs(target - activeGainLinear) > 0.0001f) {
+            Log.d(TAG, "queueInput: RAMP START active=" + activeGainLinear
+                    + " -> target=" + target);
             rampFromGain = activeGainLinear;
             rampToGain = target;
             rampFramesDone = 0;
@@ -185,6 +243,7 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
         if (rampFramesDone >= rampTotalFrames) {
             activeGainLinear = rampToGain;
             ramping = false;
+            Log.d(TAG, "advanceGain: RAMP COMPLETE -> active=" + activeGainLinear);
         }
         return gain;
     }
