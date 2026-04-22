@@ -119,6 +119,23 @@ public final class ReplayGainAudioProcessor extends BaseAudioProcessor {
             hasPendingFlushGain = false;
             ramping = false;
             Log.d(TAG, "onFlush: GAPLESS PROMOTION -> active/target=" + activeGainLinear);
+        } else if (hasPendingFlushGain && hasProcessedAnyInput && endOfStreamPending) {
+            // Same-format gapless transition: onConfigure was not called (same format),
+            // so configAfterEos is false and the branch above didn't fire. But we have
+            // a real track boundary — apply the pending gain now so Track B's first
+            // sample plays at the correct level rather than inheriting Track A's gain.
+            //
+            // Risk: on cached streams the decoder can set endOfStreamPending=true
+            // mid-track before a seek. We mitigate this by calling clearPendingGain()
+            // early in onPositionDiscontinuity (same-track seeks) so hasPendingFlushGain
+            // is false by the time onFlush fires. If the race is lost and onFlush fires
+            // first, reapplyCurrentTrackGain will correct the gain within ~50ms.
+            activeGainLinear = pendingFlushGainLinear;
+            targetGainLinear = pendingFlushGainLinear;
+            baselineGainLinear = pendingFlushGainLinear;
+            hasPendingFlushGain = false;
+            ramping = false;
+            Log.d(TAG, "onFlush: SAME-FORMAT GAPLESS PROMOTION -> active/target/baseline=" + activeGainLinear);
         } else {
             Log.d(TAG, "onFlush: SEEK/STARTUP branch, restoring to baseline=" + baselineGainLinear
                     + " (was active=" + activeGainLinear + ")");
