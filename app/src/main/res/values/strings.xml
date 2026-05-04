@@ -643,5 +643,7 @@
     <string name="sleep_timer_dialog_active_message">Timer active — %1$s remaining</string>
     <string name="sleep_timer_dialog_cancel_timer">Cancel Timer</string>
     <string name="sleep_timer_dialog_close">Close</string>
+    <string name="sleep_timer_custom_hint">Enter minutes</string>
+    <string name="sleep_timer_custom_set">Set</string>
 
 </resources>

@@ -91,6 +91,7 @@ public class PlayerControllerFragment extends Fragment {
     private ImageButton playerTrackInfo;
     private LinearLayout ratingContainer;
     private ImageButton equalizerButton;
+    private LinearLayout sleepTimerContainer;
     private ImageButton sleepTimerButton;
     private android.widget.TextView sleepTimerLabel;
     private ChipGroup assetLinkChipGroup;
@@ -167,6 +168,7 @@ public class PlayerControllerFragment extends Fragment {
         playerSongLinkChip = bind.getRoot().findViewById(R.id.asset_link_song_chip);
         playerAlbumLinkChip = bind.getRoot().findViewById(R.id.asset_link_album_chip);
         playerArtistLinkChip = bind.getRoot().findViewById(R.id.asset_link_artist_chip);
+        sleepTimerContainer = bind.getRoot().findViewById(R.id.player_sleep_timer_container);
         sleepTimerButton = bind.getRoot().findViewById(R.id.player_sleep_timer_button);
         sleepTimerLabel  = bind.getRoot().findViewById(R.id.player_sleep_timer_label);
         checkAndSetRatingContainerVisibility();
@@ -802,22 +804,22 @@ public class PlayerControllerFragment extends Fragment {
             EqualizerManager eqManager = mediaServiceBinder.getEqualizerManager();
             short numBands = eqManager.getNumberOfBands();
 
-            if (equalizerButton != null) {
+            if (equalizerButton != null && sleepTimerContainer != null) {
+                ConstraintLayout.LayoutParams sleepParams =
+                        (ConstraintLayout.LayoutParams) sleepTimerContainer.getLayoutParams();
                 if (numBands == 0) {
                     equalizerButton.setVisibility(View.GONE);
-
-                    ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerOpenQueueButton.getLayoutParams();
-                    params.startToEnd = ConstraintLayout.LayoutParams.UNSET;
-                    params.startToStart = ConstraintLayout.LayoutParams.PARENT_ID;
-                    playerOpenQueueButton.setLayoutParams(params);
+                    // Equalizer gone: anchor sleep timer to parent start so the
+                    // two remaining buttons (sleep timer + queue) stay centred.
+                    sleepParams.startToEnd = ConstraintLayout.LayoutParams.UNSET;
+                    sleepParams.startToStart = ConstraintLayout.LayoutParams.PARENT_ID;
                 } else {
                     equalizerButton.setVisibility(View.VISIBLE);
-
-                    ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerOpenQueueButton.getLayoutParams();
-                    params.startToStart = ConstraintLayout.LayoutParams.UNSET;
-                    params.startToEnd = R.id.player_open_equalizer_button;
-                    playerOpenQueueButton.setLayoutParams(params);
+                    // Equalizer visible: restore the three-button spread chain.
+                    sleepParams.startToStart = ConstraintLayout.LayoutParams.UNSET;
+                    sleepParams.startToEnd = R.id.player_open_equalizer_button;
                 }
+                sleepTimerContainer.setLayoutParams(sleepParams);
             }
         }
     }
