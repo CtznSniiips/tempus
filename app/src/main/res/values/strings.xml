@@ -638,4 +638,10 @@
 
     <string name="nav_drawer_index">Index</string>
 
+    <!-- Sleep timer -->
+    <string name="sleep_timer_dialog_title">Sleep Timer</string>
+    <string name="sleep_timer_dialog_active_message">Timer active — %1$s remaining</string>
+    <string name="sleep_timer_dialog_cancel_timer">Cancel Timer</string>
+    <string name="sleep_timer_dialog_close">Close</string>
+
 </resources>

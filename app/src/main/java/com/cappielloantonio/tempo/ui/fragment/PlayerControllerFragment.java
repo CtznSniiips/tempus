@@ -47,6 +47,11 @@ import com.cappielloantonio.tempo.service.EqualizerManager;
 import com.cappielloantonio.tempo.service.MediaService;
 import com.cappielloantonio.tempo.ui.activity.MainActivity;
 import com.cappielloantonio.tempo.ui.dialog.PlaybackSpeedDialog;
+import com.cappielloantonio.tempo.ui.dialog.SleepTimerDialog;
+import com.cappielloantonio.tempo.util.SleepTimerManager;
+import androidx.core.content.ContextCompat;
+import androidx.core.widget.ImageViewCompat;
+import android.content.res.ColorStateList;
 import com.cappielloantonio.tempo.ui.dialog.RatingDialog;
 import com.cappielloantonio.tempo.ui.dialog.TrackInfoDialog;
 import com.cappielloantonio.tempo.ui.fragment.pager.PlayerControllerHorizontalPager;
@@ -86,6 +91,8 @@ public class PlayerControllerFragment extends Fragment {
     private ImageButton playerTrackInfo;
     private LinearLayout ratingContainer;
     private ImageButton equalizerButton;
+    private ImageButton sleepTimerButton;
+    private android.widget.TextView sleepTimerLabel;
     private ChipGroup assetLinkChipGroup;
     private Chip playerSongLinkChip;
     private Chip playerAlbumLinkChip;
@@ -115,6 +122,9 @@ public class PlayerControllerFragment extends Fragment {
         initMediaLabelButton();
         initArtistLabelButton();
         initEqualizerButton();
+
+        // Sync UI immediately in case a timer survived a rotation.
+        updateSleepTimerUI();
 
         return view;
     }
@@ -157,6 +167,8 @@ public class PlayerControllerFragment extends Fragment {
         playerSongLinkChip = bind.getRoot().findViewById(R.id.asset_link_song_chip);
         playerAlbumLinkChip = bind.getRoot().findViewById(R.id.asset_link_album_chip);
         playerArtistLinkChip = bind.getRoot().findViewById(R.id.asset_link_artist_chip);
+        sleepTimerButton = bind.getRoot().findViewById(R.id.player_sleep_timer_button);
+        sleepTimerLabel  = bind.getRoot().findViewById(R.id.player_sleep_timer_label);
         checkAndSetRatingContainerVisibility();
     }
 
@@ -176,6 +188,7 @@ public class PlayerControllerFragment extends Fragment {
     }
 
     private void releaseBrowser() {
+        SleepTimerManager.getInstance().setTickListener(null);
         MediaBrowser.releaseFuture(mediaBrowserListenableFuture);
     }
 
@@ -188,6 +201,7 @@ public class PlayerControllerFragment extends Fragment {
                 mediaBrowser.setShuffleModeEnabled(Preferences.isShuffleModeEnabled());
                 mediaBrowser.setRepeatMode(Preferences.getRepeatMode());
                 setMediaControllerListener(mediaBrowser);
+                initSleepTimerButton(mediaBrowser);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -523,6 +537,80 @@ public class PlayerControllerFragment extends Fragment {
                     setPlaybackParameters(mediaBrowser);
                     break;
             }
+        }
+    }
+
+
+    // -------------------------------------------------------------------------
+    // Sleep timer
+    // -------------------------------------------------------------------------
+
+    /**
+     * Wire up the sleep timer button click listener and connect the
+     * {@link SleepTimerManager} tick callback so that:
+     *  - the countdown label refreshes every second, and
+     *  - the player pauses automatically when the timer expires.
+     */
+    private void initSleepTimerButton(MediaBrowser mediaBrowser) {
+        sleepTimerButton.setOnClickListener(v -> {
+            SleepTimerDialog dialog = new SleepTimerDialog();
+            dialog.setSleepTimerListener(new SleepTimerDialog.SleepTimerListener() {
+                @Override
+                public void onTimerSet(int minutes) {
+                    SleepTimerManager.getInstance().startTimer(minutes);
+                    connectSleepTimerTick(mediaBrowser);
+                }
+
+                @Override
+                public void onTimerCancelled() {
+                    SleepTimerManager.getInstance().cancelTimer();
+                    updateSleepTimerUI();
+                }
+            });
+            dialog.show(requireActivity().getSupportFragmentManager(), null);
+        });
+
+        connectSleepTimerTick(mediaBrowser);
+    }
+
+    /**
+     * (Re-)registers the tick listener with {@link SleepTimerManager}.
+     * Called on first bind and whenever the fragment reconnects after rotation.
+     */
+    private void connectSleepTimerTick(MediaBrowser mediaBrowser) {
+        SleepTimerManager.getInstance().setTickListener(expired -> {
+            if (expired) {
+                mediaBrowser.pause();
+            }
+            updateSleepTimerUI();
+        });
+    }
+
+    /**
+     * Refreshes the sleep timer button tint and the countdown label to
+     * reflect the current timer state. Safe to call from any thread because
+     * {@link SleepTimerManager} always invokes the tick listener on the
+     * main thread.
+     */
+    private void updateSleepTimerUI() {
+        if (sleepTimerButton == null || sleepTimerLabel == null) return;
+
+        boolean active = SleepTimerManager.getInstance().isActive();
+
+        if (active) {
+            sleepTimerLabel.setText(SleepTimerManager.getInstance().getRemainingFormatted());
+            sleepTimerLabel.setVisibility(View.VISIBLE);
+            int accentColor = com.google.android.material.color.MaterialColors.getColor(
+                    sleepTimerButton, com.google.android.material.R.attr.colorPrimary);
+            ImageViewCompat.setImageTintList(sleepTimerButton,
+                    ColorStateList.valueOf(accentColor));
+        } else {
+            sleepTimerLabel.setVisibility(View.GONE);
+            sleepTimerLabel.setText("");
+            int defaultColor = com.google.android.material.color.MaterialColors.getColor(
+                    sleepTimerButton, com.google.android.material.R.attr.colorOnSurface);
+            ImageViewCompat.setImageTintList(sleepTimerButton,
+                    ColorStateList.valueOf(defaultColor));
         }
     }
 
