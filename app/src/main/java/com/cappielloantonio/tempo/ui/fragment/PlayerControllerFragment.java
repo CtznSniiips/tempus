@@ -227,10 +227,16 @@ public class PlayerControllerFragment extends Fragment {
 
             @Override
             public void onMediaItemTransition(@androidx.annotation.Nullable androidx.media3.common.MediaItem mediaItem, int reason) {
-                // Drive the "stop after this song" mode: when the player auto-advances
-                // to the next track, tell SleepTimerManager the previous track ended.
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                    SleepTimerManager.getInstance().notifyTrackEnded();
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
+                        && SleepTimerManager.getInstance().isEndOfTrack()) {
+                    // The previous track just finished and Media3 has already
+                    // advanced to the next one.  Cancel the timer first — this
+                    // resets the UI via the tick listener — then immediately
+                    // pause so the user never hears the next song.
+                    // We do NOT go through the fade-out path here: fading into
+                    // a track the user did not intend to play would be wrong.
+                    SleepTimerManager.getInstance().cancelTimer();
+                    mediaBrowser.pause();
                 }
             }
 

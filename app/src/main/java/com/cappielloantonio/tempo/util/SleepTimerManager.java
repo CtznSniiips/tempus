@@ -93,19 +93,6 @@ public class SleepTimerManager {
     }
 
     /**
-     * Notify the manager that the current track has finished playing
-     * (auto-transition to the next).  If end-of-track mode is active
-     * this expires the timer — the registered {@link TickListener} receives
-     * {@code onTick(true)}, which should pause playback (with optional fade).
-     * Safe to call unconditionally from a {@code Player.Listener}.
-     */
-    public void notifyTrackEnded() {
-        if (!active || !endOfTrack) return;
-        cancelInternal(false);
-        if (tickListener != null) tickListener.onTick(true);
-    }
-
-    /**
      * Cancel the timer and notify the listener so the UI resets.
      * Safe to call even when no timer is running.
      */
