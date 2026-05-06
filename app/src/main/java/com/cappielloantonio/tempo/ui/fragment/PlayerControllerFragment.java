@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
@@ -221,6 +223,15 @@ public class PlayerControllerFragment extends Fragment {
                 setMediaControllerUI(mediaBrowser);
                 setMetadata(mediaMetadata);
                 setMediaInfo(mediaMetadata);
+            }
+
+            @Override
+            public void onMediaItemTransition(@androidx.annotation.Nullable androidx.media3.common.MediaItem mediaItem, int reason) {
+                // Drive the "stop after this song" mode: when the player auto-advances
+                // to the next track, tell SleepTimerManager the previous track ended.
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                    SleepTimerManager.getInstance().notifyTrackEnded();
+                }
             }
 
             @Override
@@ -568,6 +579,12 @@ public class PlayerControllerFragment extends Fragment {
                     SleepTimerManager.getInstance().cancelTimer();
                     updateSleepTimerUI();
                 }
+
+                @Override
+                public void onEndOfTrackSet() {
+                    SleepTimerManager.getInstance().startEndOfTrack();
+                    connectSleepTimerTick(mediaBrowser);
+                }
             });
             dialog.show(requireActivity().getSupportFragmentManager(), null);
         });
@@ -578,14 +595,56 @@ public class PlayerControllerFragment extends Fragment {
     /**
      * (Re-)registers the tick listener with {@link SleepTimerManager}.
      * Called on first bind and whenever the fragment reconnects after rotation.
+     *
+     * <p>When the timer expires (countdown or end-of-track), a 10-second
+     * fade-out is applied before the player is paused, giving a much more
+     * pleasant user experience than an abrupt stop.
      */
     private void connectSleepTimerTick(MediaBrowser mediaBrowser) {
         SleepTimerManager.getInstance().setTickListener(expired -> {
             if (expired) {
-                mediaBrowser.pause();
+                startFadeOutThenPause(mediaBrowser);
             }
             updateSleepTimerUI();
         });
+    }
+
+    // -------------------------------------------------------------------------
+    // Fade-out (called when sleep timer expires)
+    // -------------------------------------------------------------------------
+
+    /** Duration of the fade-out in milliseconds. */
+    private static final long FADE_DURATION_MS = 10_000L;
+    /** Number of volume steps during the fade. */
+    private static final int  FADE_STEPS       = 40;
+
+    /**
+     * Gradually lowers the player volume to zero over {@link #FADE_DURATION_MS},
+     * then pauses playback and restores full volume.
+     * If the fragment is detached mid-fade the loop stops safely.
+     */
+    private void startFadeOutThenPause(MediaBrowser mediaBrowser) {
+        final long stepMs   = FADE_DURATION_MS / FADE_STEPS;
+        final float decrement = 1.0f / FADE_STEPS;
+        final float[] volume = {mediaBrowser.getVolume()};
+
+        Handler fadeHandler = new Handler(Looper.getMainLooper());
+        Runnable fadeStep = new Runnable() {
+            @Override
+            public void run() {
+                if (!isAdded()) return; // fragment gone — abort
+                volume[0] = Math.max(0f, volume[0] - decrement);
+                mediaBrowser.setVolume(volume[0]);
+                if (volume[0] > 0f) {
+                    fadeHandler.postDelayed(this, stepMs);
+                } else {
+                    mediaBrowser.pause();
+                    // Restore volume so the user can resume normally.
+                    fadeHandler.postDelayed(() -> mediaBrowser.setVolume(1.0f), 300);
+                }
+            }
+        };
+        fadeHandler.post(fadeStep);
     }
 
     /**
@@ -600,7 +659,11 @@ public class PlayerControllerFragment extends Fragment {
         boolean active = SleepTimerManager.getInstance().isActive();
 
         if (active) {
-            sleepTimerLabel.setText(SleepTimerManager.getInstance().getRemainingFormatted());
+            boolean isEndOfTrack = SleepTimerManager.getInstance().isEndOfTrack();
+            String label = isEndOfTrack
+                    ? getString(R.string.sleep_timer_end_of_track_label)
+                    : SleepTimerManager.getInstance().getRemainingFormatted();
+            sleepTimerLabel.setText(label);
             sleepTimerLabel.setVisibility(View.VISIBLE);
             int accentColor = com.google.android.material.color.MaterialColors.getColor(
                     sleepTimerButton, com.google.android.material.R.attr.colorPrimary);
