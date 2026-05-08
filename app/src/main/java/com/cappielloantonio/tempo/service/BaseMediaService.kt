@@ -360,7 +360,11 @@ open class BaseMediaService : MediaLibraryService() {
                 } else {
                     stopWidgetUpdates()
                     stopRadioHeaderChecks()
-                    crossfadeManager.onPlaybackStopped()
+                    if (player.playbackState != Player.STATE_BUFFERING) {
+                        crossfadeManager.onPlaybackStopped()
+                    } else {
+                        crossfadeManager.stop() // pause tick, preserve fadingIn/fadingOut state
+                    }
                 }
                 updateWidget(player)
             }
