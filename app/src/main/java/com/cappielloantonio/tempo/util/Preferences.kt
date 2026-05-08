@@ -107,7 +107,9 @@ object Preferences {
     private const val AA_SHUFFLE_GENRE_SONGS = "androidauto_shuffle_genre_songs"
     private const val AA_STARRED_FOR_MADE_FOR_YOU ="androidauto_starred_for_made_for_you"
     private const val AA_SHUFFLE_STARRED_TRACKS = "androidauto_shuffle_starred_tracks"
-
+    private const val CROSSFADE_MODE = "crossfade_mode"
+    private const val CROSSFADE_DURATION = "crossfade_duration"
+	
 	@JvmStatic
     fun getServer(): String? {
         return App.getInstance().preferences.getString(SERVER, null)
@@ -883,5 +885,25 @@ object Preferences {
     @JvmStatic
     fun getAndroidAutoStarredForMadeForYou(): Int {
         return App.getInstance().preferences.getString(AA_STARRED_FOR_MADE_FOR_YOU, "0")!!.toInt()
+    }
+
+    @JvmStatic
+    fun getCrossfadeMode(): String {
+        return App.getInstance().preferences.getString(CROSSFADE_MODE, "disabled") ?: "disabled"
+    }
+
+    @JvmStatic
+    fun setCrossfadeMode(mode: String) {
+        App.getInstance().preferences.edit().putString(CROSSFADE_MODE, mode).apply()
+    }
+
+    @JvmStatic
+    fun getCrossfadeDurationSeconds(): Int {
+        return App.getInstance().preferences.getInt(CROSSFADE_DURATION, 5)
+    }
+
+    @JvmStatic
+    fun setCrossfadeDurationSeconds(seconds: Int) {
+        App.getInstance().preferences.edit().putInt(CROSSFADE_DURATION, seconds.coerceIn(0, 15)).apply()
     }
 }
