@@ -126,8 +126,16 @@ class CrossfadeManager {
             return
         }
 
-        // Fade-out: only apply when we know the duration and there is a next track
+// Fade-out: only apply when we know the duration and there is a next track
         if (durationMs > 0 && positionMs >= 0 && p.hasNextMediaItem()) {
+            // album_aware: don't fade out into a consecutive same-album track
+            if (mode == "album_aware" && isConsecutiveAlbumTrack(p.currentMediaItem, p.nextMediaItem)) {
+                if (fadingOut) {
+                    fadingOut = false
+                    resetVolume()
+                }
+                return
+            }
             val timeUntilEndMs = durationMs - positionMs
             if (timeUntilEndMs in 0..crossfadeMs) {
                 fadingOut = true
