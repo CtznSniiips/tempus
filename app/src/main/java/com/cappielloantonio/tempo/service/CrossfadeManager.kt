@@ -156,7 +156,7 @@ class CrossfadeManager {
      * Consecutive is defined as: same albumId, same disc, trackNumber == oldTrack + 1.
      * A disc boundary (disc N last track → disc N+1 track 1) also counts as consecutive.
      */
-    private fun isConsecutiveAlbumTrack(oldItem: MediaItem?, newItem: MediaItem): Boolean {
+    internal fun isConsecutiveAlbumTrack(oldItem: MediaItem?, newItem: MediaItem): Boolean {
         if (oldItem == null) return false
 
         val oldExtras = oldItem.mediaMetadata.extras ?: return false
