@@ -129,7 +129,9 @@ class CrossfadeManager {
 // Fade-out: only apply when we know the duration and there is a next track
         if (durationMs > 0 && positionMs >= 0 && p.hasNextMediaItem()) {
             // album_aware: don't fade out into a consecutive same-album track
-            if (mode == "album_aware" && isConsecutiveAlbumTrack(p.currentMediaItem, p.nextMediaItem)) {
+        val nextIndex = p.nextMediaItemIndex
+        val nextItem = if (nextIndex != C.INDEX_UNSET) p.getMediaItemAt(nextIndex) else null
+        if (mode == "album_aware" && isConsecutiveAlbumTrack(p.currentMediaItem, nextItem)) {
                 if (fadingOut) {
                     fadingOut = false
                     resetVolume()
@@ -156,7 +158,8 @@ class CrossfadeManager {
      * Consecutive is defined as: same albumId, same disc, trackNumber == oldTrack + 1.
      * A disc boundary (disc N last track → disc N+1 track 1) also counts as consecutive.
      */
-    internal fun isConsecutiveAlbumTrack(oldItem: MediaItem?, newItem: MediaItem): Boolean {
+    internal fun isConsecutiveAlbumTrack(oldItem: MediaItem?, newItem: MediaItem?): Boolean {
+        if (newItem == null) return false
         if (oldItem == null) return false
 
         val oldExtras = oldItem.mediaMetadata.extras ?: return false
