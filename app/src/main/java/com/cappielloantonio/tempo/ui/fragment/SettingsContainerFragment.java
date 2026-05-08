@@ -160,6 +160,7 @@ public class SettingsContainerFragment extends PreferenceFragmentCompat {
         bindMediaService();
         actionAppEqualizer();
         actionReplayGainPreamp();
+        actionCrossfadeDuration();
 
         applyAccordionState();
     }
@@ -670,6 +671,20 @@ public class SettingsContainerFragment extends PreferenceFragmentCompat {
         });
     }
 
+    private void actionCrossfadeDuration() {
+        SeekBarPreference durationPref = findPreference("crossfade_duration");
+        if (durationPref == null) return;
+
+        durationPref.setValue(Preferences.getCrossfadeDurationSeconds());
+
+        durationPref.setOnPreferenceChangeListener((preference, newValue) -> {
+            if (newValue instanceof Integer) {
+                Preferences.setCrossfadeDurationSeconds((Integer) newValue);
+            }
+            return true;
+        });
+    }
+    
     private void actionAppEqualizer() {
         Preference appEqualizer = findPreference("app_equalizer");
         if (appEqualizer != null) {
