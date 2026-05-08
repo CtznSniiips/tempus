@@ -216,6 +216,32 @@
             app:summary="@string/settings_summary_skip_min_star_rating"
             app:title="@string/settings_title_skip_min_star_rating" />
 
+        <PreferenceCategory app:title="@string/settings_title_crossfade">
+            <Preference
+                app:selectable="false"
+                app:summary="@string/settings_summary_crossfade" />
+
+            <ListPreference
+                app:defaultValue="disabled"
+                app:dialogTitle="@string/settings_crossfade_mode"
+                app:entries="@array/crossfade_mode_titles"
+                app:entryValues="@array/crossfade_mode_values"
+                app:key="crossfade_mode"
+                app:title="@string/settings_crossfade_mode"
+                app:useSimpleSummaryProvider="true" />
+
+            <SeekBarPreference
+                android:key="crossfade_duration"
+                app:defaultValue="5"
+                app:min="0"
+                android:max="15"
+                app:seekBarIncrement="1"
+                app:showSeekBarValue="true"
+                app:title="@string/settings_crossfade_duration_title"
+                app:summary="@string/settings_crossfade_duration_summary" />
+
+        </PreferenceCategory>
+		
     </com.cappielloantonio.tempo.util.ClickablePreferenceCategory>
 
     <com.cappielloantonio.tempo.util.ClickablePreferenceCategory app:title="@string/settings_title_playlist">
