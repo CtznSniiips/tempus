@@ -418,6 +418,7 @@
     <string name="settings_summary_scrobble">El scrobbling es una característica que permite a tu dispositivo enviar información sobre las pistas que escuchas al servidor de música. Esta información ayuda a crear recomendaciones personalizadas basadas en tus gustos musicales.</string>
     <string name="settings_sync_starred_tracks_for_offline_use_title">Sincronizar pistas destacadas para uso sin conexión</string>
     <string name="settings_theme">Tema</string>
+    <string name="settings_dark_theme_style">Estilo del tema oscuro</string>
     <string name="settings_tile_size">Tamaño de los elementos de la cuadrícula</string>
     <string name="settings_title_data">Datos</string>
     <string name="settings_title_general">General</string>
