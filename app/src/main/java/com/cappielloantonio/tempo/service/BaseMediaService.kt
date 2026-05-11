@@ -863,10 +863,15 @@ open class BaseMediaService : MediaLibraryService() {
         // from oldPrimary (e.g. onIsPlayingChanged after stop()) go nowhere.
         initializePlayerListener(secondary)
 
-        // Update the crossfade manager to track the new primary.
-        crossfadeManager.attach(secondary)
-        // Reset CrossfadeManager state before any new events arrive.
+        // FIX (attach/notifyHandoffComplete ordering): notifyHandoffComplete MUST
+        // be called before attach(secondary). With the previous order, attach()
+        // found state == COMPLETING (not IDLE) and called abortCrossfade(), which
+        // queued stop() + clearMediaItems() on the secondary that was just being
+        // promoted — asynchronously killing playback a few milliseconds after the
+        // crossfade appeared to complete. Resetting state to IDLE first means
+        // attach() skips the abortCrossfade() branch entirely.
         crossfadeManager.notifyHandoffComplete()
+        crossfadeManager.attach(secondary)
 
         // Promote secondary to the session player.
         mediaLibrarySession.player = secondary
