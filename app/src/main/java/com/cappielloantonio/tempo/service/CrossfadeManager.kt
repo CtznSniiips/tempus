@@ -41,6 +41,11 @@ private const val TICK_INTERVAL_MS = 100L
  *  the same track that secondary is starting) and captured in
  *  [capturedRemainingQueue]. That list is delivered to [onCrossfadeComplete] so
  *  BaseMediaService can transplant it onto the secondary before promoting it.
+ *
+ *  Note: crossfade is intentionally skipped when [nextMediaItemIndex] wraps to
+ *  a position at or before [currentMediaItemIndex] (repeat-all / shuffle
+ *  boundary). Removing from a wrapped index would include the currently playing
+ *  item and stop playback unexpectedly.
  */
 @UnstableApi
 class CrossfadeManager {
@@ -123,9 +128,21 @@ class CrossfadeManager {
         primaryPlayer = player
     }
 
-    /** Ensures the tick loop is running. Safe to call redundantly. */
+    /**
+     * Ensures the tick loop is running. Safe to call redundantly.
+     *
+     * [lastTickRealtime] is reset here so that the first CROSSFADING tick after
+     * any pause or buffer stall does not accumulate idle time in
+     * [crossfadeElapsedMs] and snap the volume ramp to completion instantly.
+     */
     fun start() {
         handler.removeCallbacks(tickRunnable)
+        // Reset the wall-clock anchor unconditionally. In CROSSFADING this
+        // prevents a stale delta from jumping crossfadeElapsedMs forward by the
+        // entire pause/buffer duration on the first resumed tick. In other states
+        // the field is either unused (IDLE, COMPLETING) or freshly seeded at the
+        // PREPARING→CROSSFADING transition, so resetting it here is harmless.
+        lastTickRealtime = SystemClock.elapsedRealtime()
         handler.postDelayed(tickRunnable, TICK_INTERVAL_MS)
     }
 
@@ -264,6 +281,9 @@ class CrossfadeManager {
                 val secondary = secondaryPlayer ?: run { abortCrossfade(); return }
 
                 // Accumulate real wall-clock time; immune to position jumps.
+                // lastTickRealtime is always refreshed by start() when the tick
+                // loop resumes after a pause or buffer stall, so this delta
+                // never silently swallows idle time.
                 val now = SystemClock.elapsedRealtime()
                 crossfadeElapsedMs += (now - lastTickRealtime)
                 lastTickRealtime = now
@@ -310,6 +330,13 @@ class CrossfadeManager {
         if (timeUntilEndMs > crossfadeMs || timeUntilEndMs < 0) return
 
         val nextIndex = primary.nextMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
+
+        // With REPEAT_MODE_ALL or shuffle the next index can wrap to a position
+        // at or before the current item. Removing from that index onward would
+        // include the currently playing item and stop playback unexpectedly, so
+        // we skip the two-player crossfade in that case.
+        if (nextIndex <= primary.currentMediaItemIndex) return
+
         val nextItem = primary.getMediaItemAt(nextIndex)
 
         if (mode == "album_aware" && isConsecutiveAlbumTrack(primary.currentMediaItem, nextItem)) return
