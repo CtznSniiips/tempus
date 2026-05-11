@@ -241,7 +241,7 @@ class CrossfadeManager {
 
             State.PREPARING -> {
                 val secondary = secondaryPlayer ?: run { state = State.IDLE; return }
-                if (secondary.playbackState == Player.STATE_ERROR) { abortCrossfade(); return }
+                if (secondary.playerError != null) { abortCrossfade(); return }
 
                 // Keep fading primary proportionally while secondary buffers.
                 applyPrimaryFadeFromRemaining(primary, crossfadeMs)
@@ -344,8 +344,8 @@ class CrossfadeManager {
         secondaryListener?.let { secondary.removeListener(it) }
 
         val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ERROR) handler.post { abortCrossfade() }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                handler.post { abortCrossfade() }
             }
         }
         secondaryListener = listener
