@@ -223,6 +223,17 @@
         <item>auto</item>
     </string-array>
 
+    <string-array name="crossfade_mode_titles">
+        <item>@string/crossfade_mode_disabled</item>
+        <item>@string/crossfade_mode_all</item>
+        <item>@string/crossfade_mode_album_aware</item>
+    </string-array>
+    <string-array name="crossfade_mode_values">
+        <item>disabled</item>
+        <item>all</item>
+        <item>album_aware</item>
+    </string-array>
+	
     <string-array name="transcoded_download_option_list_titles">
         <item>Do not transcode</item>
         <item>Server settings</item>

@@ -53,6 +53,7 @@ open class BaseMediaService : MediaLibraryService() {
     protected lateinit var mediaLibrarySession: MediaLibrarySession
     private lateinit var networkCallback: CustomNetworkCallback
     private lateinit var equalizerManager: EqualizerManager
+    protected val crossfadeManager = CrossfadeManager()
     private val widgetUpdateHandler = Handler(Looper.getMainLooper())
     private var widgetUpdateScheduled = false
     private val widgetUpdateRunnable = object : Runnable {
@@ -126,8 +127,10 @@ open class BaseMediaService : MediaLibraryService() {
 
     private var lastRadioArtist: String? = null
     private var lastRadioTitle: String? = null
+    private var previousMediaItem: MediaItem? = null
 
     fun initializePlayerListener(player: Player) {
+        crossfadeManager.attach(player)
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 Log.d(TAG, "onMediaItemTransition" + player.currentMediaItemIndex)
@@ -162,6 +165,15 @@ open class BaseMediaService : MediaLibraryService() {
                 
                 // Restart header checks for radio streams when media item changes
                 val mediaType = mediaItem.mediaMetadata.extras?.getString("type")
+                
+                // Crossfade: only apply to music tracks, not radio/podcast
+                if (mediaType == Constants.MEDIA_TYPE_MUSIC) {
+                    crossfadeManager.onTrackTransition(previousMediaItem, mediaItem)
+                } else {
+                    crossfadeManager.onSeekOrSkip()
+                }
+                previousMediaItem = mediaItem
+
                 if (mediaType == Constants.MEDIA_TYPE_RADIO && player.isPlaying) {
                     stopRadioHeaderChecks()
                     scheduleRadioHeaderChecks()
@@ -329,9 +341,15 @@ open class BaseMediaService : MediaLibraryService() {
                 if (isPlaying) {
                     scheduleWidgetUpdates()
                     scheduleRadioHeaderChecks()
+                    crossfadeManager.start()
                 } else {
                     stopWidgetUpdates()
                     stopRadioHeaderChecks()
+                    if (player.playbackState != Player.STATE_BUFFERING) {
+                        crossfadeManager.onPlaybackStopped()
+                    } else {
+                        crossfadeManager.stop() // pause tick, preserve fadingIn/fadingOut state
+                    }
                 }
                 updateWidget(player)
             }
@@ -356,6 +374,12 @@ open class BaseMediaService : MediaLibraryService() {
             ) {
                 Log.d(TAG, "onPositionDiscontinuity reason=$reason old=${oldPosition.mediaItemIndex} new=${newPosition.mediaItemIndex}")
                 super.onPositionDiscontinuity(oldPosition, newPosition, reason)
+
+                // Reset crossfade state on manual seeks/skips (not auto-transitions which
+                // are handled by onMediaItemTransition).
+                if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                    crossfadeManager.onSeekOrSkip()
+                }
 
                 // Re-apply gain whenever we stay on the same track for any reason
                 // except an automatic transition to the next track.
@@ -448,6 +472,7 @@ open class BaseMediaService : MediaLibraryService() {
     override fun onDestroy() {
         releaseNetworkCallback()
         equalizerManager.release()
+        crossfadeManager.release()
         ReplayGainUtil.release()
         stopWidgetUpdates()
         stopRadioHeaderChecks()
