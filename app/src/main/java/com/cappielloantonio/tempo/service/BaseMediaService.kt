@@ -54,6 +54,22 @@ open class BaseMediaService : MediaLibraryService() {
     private lateinit var networkCallback: CustomNetworkCallback
     private lateinit var equalizerManager: EqualizerManager
     protected val crossfadeManager = CrossfadeManager()
+
+    /**
+     * Recycled ExoPlayer that alternates roles between crossfade cycles.
+     * After each crossfade the old primary is stopped, cleared, and parked here
+     * so the next crossfade can reuse it without a fresh allocation.
+     */
+    private var standbyPlayer: ExoPlayer? = null
+
+    /**
+     * The listener currently installed on the active player. Tracked so it can
+     * be cleanly removed when the active player changes (Cast handoff or
+     * crossfade promotion) before a new listener is added to the incoming player.
+     */
+    private var primaryPlayerListener: Player.Listener? = null
+    private var primaryPlayerForListener: Player? = null
+
     private val widgetUpdateHandler = Handler(Looper.getMainLooper())
     private var widgetUpdateScheduled = false
     private val widgetUpdateRunnable = object : Runnable {
@@ -79,9 +95,18 @@ open class BaseMediaService : MediaLibraryService() {
 
     open fun playerInitHook() {
         initializeExoPlayer()
+
+        // Wire up the two-player crossfade machinery before any listener is attached.
+        crossfadeManager.attach(exoplayer)
+        crossfadeManager.secondaryPlayerFactory = ::createOrReclaimStandby
+        crossfadeManager.onCrossfadeComplete = ::completeCrossfadeSwitch
+
         initializeMediaLibrarySession(exoplayer)
         initializePlayerListener(exoplayer)
-        setPlayer(null, exoplayer)
+        // Assign the session player directly — setPlayer() is reserved for
+        // live player switches (Cast handoff, crossfade promotion) so that its
+        // queue-transfer logic isn't invoked on fresh startup.
+        mediaLibrarySession.player = exoplayer
     }
 
     open fun getMediaLibrarySessionCallback(): MediaLibrarySession.Callback {
@@ -130,8 +155,11 @@ open class BaseMediaService : MediaLibraryService() {
     private var previousMediaItem: MediaItem? = null
 
     fun initializePlayerListener(player: Player) {
-        crossfadeManager.attach(player)
-        player.addListener(object : Player.Listener {
+        // Remove the listener that was tracking the previous active player so its
+        // events don't bleed through after the player is no longer in the session.
+        primaryPlayerListener?.let { primaryPlayerForListener?.removeListener(it) }
+
+        val listener = object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 Log.d(TAG, "onMediaItemTransition" + player.currentMediaItemIndex)
                 if (mediaItem == null) return
@@ -419,7 +447,10 @@ open class BaseMediaService : MediaLibraryService() {
                 Log.d(TAG, "onAudioSessionIdChanged")
                 attachEqualizerIfPossible(audioSessionId)
             }
-        })
+        }
+        player.addListener(listener)
+        primaryPlayerListener = listener
+        primaryPlayerForListener = player
         if (player.isPlaying) {
             scheduleWidgetUpdates()
         }
@@ -427,6 +458,9 @@ open class BaseMediaService : MediaLibraryService() {
 
     fun setPlayer(oldPlayer: Player?, newPlayer: Player) {
         if (oldPlayer === newPlayer) return
+        // Keep crossfadeManager and listener tracking in sync with the active player.
+        crossfadeManager.attach(newPlayer)
+        initializePlayerListener(newPlayer)
         if (oldPlayer != null) {
             val currentQueue = getQueueFromPlayer(oldPlayer)
             val currentIndex = oldPlayer.currentMediaItemIndex
@@ -441,6 +475,8 @@ open class BaseMediaService : MediaLibraryService() {
     }
 
     open fun releasePlayers() {
+        standbyPlayer?.release()
+        standbyPlayer = null
         exoplayer.release()
     }
 
@@ -752,6 +788,95 @@ open class BaseMediaService : MediaLibraryService() {
             sendBroadcast(Intent(ACTION_EQUALIZER_UPDATED))
         }
         return attached
+    }
+
+    /**
+     * Builds a new ExoPlayer configured identically to the primary, except
+     * without self-managed audio focus (the MediaLibrarySession handles focus
+     * on behalf of whichever player is currently the session player).
+     */
+    private fun createSecondaryPlayer(): ExoPlayer {
+        return ExoPlayer.Builder(this)
+            .setRenderersFactory(getRenderersFactory())
+            .setMediaSourceFactory(getMediaSourceFactory())
+            .setAudioAttributes(AudioAttributes.DEFAULT, false)
+            .setHandleAudioBecomingNoisy(false)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .setLoadControl(initializeLoadControl())
+            .build()
+    }
+
+    /**
+     * Returns the [standbyPlayer] if one exists (stopped and cleared from the
+     * previous crossfade), otherwise allocates a fresh secondary ExoPlayer and
+     * parks it as the standby so it is ready for reuse after this cycle.
+     */
+    private fun createOrReclaimStandby(): ExoPlayer {
+        return standbyPlayer ?: createSecondaryPlayer().also { standbyPlayer = it }
+    }
+
+    /**
+     * Promoted by [CrossfadeManager.onCrossfadeComplete] once the volume ramp
+     * has finished. Responsibility: transplant the remaining queue onto the
+     * secondary, flip the session player, recycle the old primary as the new
+     * standby, and call [CrossfadeManager.notifyHandoffComplete] so the manager
+     * can reset its internal state.
+     *
+     * @param secondary The ExoPlayer that just finished fading in (volume = 1).
+     * @param remaining Queue tail captured from the primary at crossfade-trigger
+     *                  time. Index 0 is the item [secondary] is already playing;
+     *                  indices 1..N must be appended so playback continues past
+     *                  the crossfaded track.
+     */
+    private fun completeCrossfadeSwitch(secondary: ExoPlayer, remaining: List<MediaItem>) {
+        val oldPrimary = exoplayer
+
+        // Append the rest of the queue (everything after the track secondary is
+        // already playing at index 0).
+        val extraItems = remaining.drop(1)
+        if (extraItems.isNotEmpty()) secondary.addMediaItems(extraItems)
+
+        // Mirror repeat / shuffle settings.
+        secondary.repeatMode = oldPrimary.repeatMode
+        secondary.shuffleModeEnabled = oldPrimary.shuffleModeEnabled
+
+        // Record the crossfaded-in track as the last seen item so that the next
+        // onTrackTransition correctly identifies consecutive-album neighbours.
+        previousMediaItem = secondary.currentMediaItem
+
+        // Record last-played timestamp for the newly active track.
+        MediaManager.setLastPlayedTimestamp(secondary.currentMediaItem)
+
+        // Swap the active listener: remove from old primary, install on secondary.
+        // This must happen before notifyHandoffComplete so that any late events
+        // from oldPrimary (e.g. onIsPlayingChanged after stop()) go nowhere.
+        initializePlayerListener(secondary)
+
+        // Update the crossfade manager to track the new primary.
+        crossfadeManager.attach(secondary)
+        // Reset CrossfadeManager state before any new events arrive.
+        crossfadeManager.notifyHandoffComplete()
+
+        // Promote secondary to the session player.
+        mediaLibrarySession.player = secondary
+        exoplayer = secondary
+
+        // Park the old primary as the standby for the next crossfade cycle.
+        // It is already stopped (primary.stop() was called inside CrossfadeManager
+        // at volume = 0), so we just clear its queue.
+        oldPrimary.clearMediaItems()
+        standbyPlayer = oldPrimary
+
+        // Re-attach the equalizer to the new primary's audio session.
+        val audioSessionId = secondary.audioSessionId
+        if (audioSessionId != 0 && audioSessionId != -1) {
+            attachEqualizerIfPossible(audioSessionId)
+        }
+
+        updateWidget(secondary)
+
+        // Restart the tick so future crossfades are detected on the new primary.
+        if (secondary.isPlaying) crossfadeManager.start()
     }
 
     private fun getRenderersFactory(): DefaultRenderersFactory {
