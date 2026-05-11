@@ -186,8 +186,12 @@ class CrossfadeManager {
      */
     fun onPlaybackStopped() {
         stop()
-        // CROSSFADING / COMPLETING: primary was stopped by us; do not abort.
-        if (state == State.CROSSFADING || state == State.COMPLETING) return
+        // PREPARING / CROSSFADING / COMPLETING: the primary ending naturally
+        // (STATE_ENDED) or being silenced by us is not a reason to abort.
+        // PREPARING: the primary may reach STATE_ENDED while the secondary is
+        // still buffering; aborting here throws away the secondary and leaves
+        // playback stopped with an empty queue (the items were already removed).
+        if (state == State.PREPARING || state == State.CROSSFADING || state == State.COMPLETING) return
         abortCrossfade(); fadingIn = false; resetPrimaryVolume()
     }
 
@@ -265,13 +269,21 @@ class CrossfadeManager {
 
                 // Advance to CROSSFADING once secondary is producing audio.
                 if (secondary.isPlaying) {
-                    // Seed elapsed time so the ramp is continuous with the
-                    // proportional fade already applied during PREPARING.
+                    // Seed elapsed time to make the CROSSFADING volume ramp
+                    // continuous with the proportional fade already applied during
+                    // PREPARING. If the primary has already reached STATE_ENDED
+                    // (remaining ≈ 0), do NOT seed to crossfadeMs — that would
+                    // set progress = 1f immediately and produce an instant handoff
+                    // with no secondary fade-in. Instead, seed to 0 so the
+                    // secondary fades in from silence over the full crossfadeMs.
                     val durationMs = effectiveDuration(primary)
-                    val remaining = if (durationMs != C.TIME_UNSET)
+                    val remaining = if (durationMs != C.TIME_UNSET && primary.isPlaying)
                         (durationMs - primary.currentPosition).coerceAtLeast(0L)
                     else 0L
-                    crossfadeElapsedMs = (crossfadeMs - remaining).coerceAtLeast(0L)
+                    crossfadeElapsedMs = if (primary.isPlaying)
+                        (crossfadeMs - remaining).coerceAtLeast(0L)
+                    else
+                        0L
                     lastTickRealtime = SystemClock.elapsedRealtime()
                     state = State.CROSSFADING
                 }
@@ -416,6 +428,12 @@ class CrossfadeManager {
         secondaryListener?.let { secondary.removeListener(it) }
         secondaryListener = null
         secondary.stop()
+        // Seek to the start after stopping so that any audio frames the hardware
+        // buffer has already received are discarded before this player is recycled
+        // as the standby. Without this, residual buffered frames play back as
+        // loud static when the instance is reused as the secondary in the next
+        // crossfade cycle.
+        secondary.seekTo(0)
         secondary.clearMediaItems()
         secondaryPlayer = null
 
