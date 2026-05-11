@@ -23,7 +23,12 @@ class MediaService : BaseMediaService(), SessionAvailabilityListener {
                 .addOnSuccessListener { castContext ->
                     castPlayer = CastPlayer(castContext)
                     castPlayer.setSessionAvailabilityListener(this@MediaService)
-                    initializePlayerListener(castPlayer)
+                    // Do NOT call initializePlayerListener here. The listener is
+                    // installed by setPlayer() only when a Cast session actually
+                    // becomes available, preventing the crossfadeManager from being
+                    // silently re-attached to castPlayer while the user is playing
+                    // locally (Bug: crossfade volume changes would target castPlayer
+                    // rather than the local ExoPlayer).
                     if (castPlayer.isCastSessionAvailable)
                         setPlayer(mediaLibrarySession.player, castPlayer)
                 }
