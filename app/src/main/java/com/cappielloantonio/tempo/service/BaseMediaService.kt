@@ -810,9 +810,20 @@ open class BaseMediaService : MediaLibraryService() {
      * Returns the [standbyPlayer] if one exists (stopped and cleared from the
      * previous crossfade), otherwise allocates a fresh secondary ExoPlayer and
      * parks it as the standby so it is ready for reuse after this cycle.
+     *
+     * Ownership of the returned instance is transferred to CrossfadeManager.
+     * [standbyPlayer] is nulled out so that a concurrent [setPlayer] call
+     * (e.g. Cast handoff) cannot release an ExoPlayer that is actively being
+     * used as the crossfade secondary.
      */
     private fun createOrReclaimStandby(): ExoPlayer {
-        return standbyPlayer ?: createSecondaryPlayer().also { standbyPlayer = it }
+        val existing = standbyPlayer
+        return if (existing != null) {
+            standbyPlayer = null   // transfer ownership; prevent aliased release
+            existing
+        } else {
+            createSecondaryPlayer()
+        }
     }
 
     /**
