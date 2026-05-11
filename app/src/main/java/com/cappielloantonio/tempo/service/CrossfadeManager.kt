@@ -71,6 +71,11 @@ class CrossfadeManager {
         player?.volume = 0f
         fadingIn = true
         fadingOut = false
+        // FIX 3: Ensure the tick is running regardless of whether onIsPlayingChanged fires.
+        // For gapless auto-transitions isPlaying stays true and the tick is already running;
+        // for buffering transitions the tick may have been paused — restart it here so
+        // fadingIn=true is always serviced promptly.
+        start()
     }
 
     /**
@@ -106,7 +111,6 @@ class CrossfadeManager {
             return
         }
 
-        val durationMs = p.duration
         val positionMs = p.currentPosition
         val crossfadeMs = Preferences.getCrossfadeDurationSeconds() * 1000L
 
@@ -116,7 +120,10 @@ class CrossfadeManager {
         }
 
         if (fadingIn) {
-            if (durationMs <= 0 || positionMs < 0) return
+            // FIX 1: Fade-in progress is positionMs/crossfadeMs — it does NOT need durationMs.
+            // The old guard "durationMs <= 0" was incorrectly blocking fade-in for streaming
+            // tracks where ExoPlayer returns C.TIME_UNSET until the bitstream is parsed.
+            if (positionMs < 0) return
 
             val progress = (positionMs.toFloat() / crossfadeMs).coerceIn(0f, 1f)
             p.volume = progress
@@ -127,12 +134,23 @@ class CrossfadeManager {
             return
         }
 
-// Fade-out: only apply when we know the duration and there is a next track
-        if (durationMs > 0 && positionMs >= 0 && p.hasNextMediaItem()) {
+        // FIX 2: Fall back to the Subsonic metadata duration when ExoPlayer hasn't yet
+        // determined the stream duration (player.duration == C.TIME_UNSET). The "duration"
+        // extra is stored in seconds, so multiply by 1000 to get milliseconds.
+        val playerDurationMs = p.duration
+        val durationMs: Long = if (playerDurationMs != C.TIME_UNSET && playerDurationMs > 0) {
+            playerDurationMs
+        } else {
+            val extrasSec = p.currentMediaItem?.mediaMetadata?.extras?.getInt("duration", 0) ?: 0
+            if (extrasSec > 0) extrasSec * 1000L else C.TIME_UNSET
+        }
+
+        // Fade-out: only apply when we know the duration and there is a next track
+        if (durationMs != C.TIME_UNSET && durationMs > 0 && positionMs >= 0 && p.hasNextMediaItem()) {
             // album_aware: don't fade out into a consecutive same-album track
-        val nextIndex = p.nextMediaItemIndex
-        val nextItem = if (nextIndex != C.INDEX_UNSET) p.getMediaItemAt(nextIndex) else null
-        if (mode == "album_aware" && isConsecutiveAlbumTrack(p.currentMediaItem, nextItem)) {
+            val nextIndex = p.nextMediaItemIndex
+            val nextItem = if (nextIndex != C.INDEX_UNSET) p.getMediaItemAt(nextIndex) else null
+            if (mode == "album_aware" && isConsecutiveAlbumTrack(p.currentMediaItem, nextItem)) {
                 if (fadingOut) {
                     fadingOut = false
                     resetVolume()
