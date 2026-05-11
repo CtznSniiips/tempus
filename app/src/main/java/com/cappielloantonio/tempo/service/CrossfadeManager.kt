@@ -46,6 +46,14 @@ private const val TICK_INTERVAL_MS = 100L
  *  a position at or before [currentMediaItemIndex] (repeat-all / shuffle
  *  boundary). Removing from a wrapped index would include the currently playing
  *  item and stop playback unexpectedly.
+ *
+ * Audio focus contract:
+ *  The secondary player is created without self-managed audio focus (the
+ *  MediaLibrarySession covers the primary). When the OS causes the primary to
+ *  pause (focus loss, becoming noisy, etc.), [onPlaybackStopped] mirrors that
+ *  pause to the secondary so it does not run without focus or advance its
+ *  position while the primary is frozen. [start] reverses the pause when the
+ *  primary regains focus and resumes.
  */
 @UnstableApi
 class CrossfadeManager {
@@ -134,6 +142,11 @@ class CrossfadeManager {
      * [lastTickRealtime] is reset here so that the first CROSSFADING tick after
      * any pause or buffer stall does not accumulate idle time in
      * [crossfadeElapsedMs] and snap the volume ramp to completion instantly.
+     *
+     * If a two-player crossfade is in progress (PREPARING or CROSSFADING), the
+     * secondary is also resumed here. [onPlaybackStopped] will have paused it
+     * when the primary lost audio focus; this is the reciprocal resume so both
+     * players restart together and the crossfade timing stays coherent.
      */
     fun start() {
         handler.removeCallbacks(tickRunnable)
@@ -143,6 +156,12 @@ class CrossfadeManager {
         // the field is either unused (IDLE, COMPLETING) or freshly seeded at the
         // PREPARING→CROSSFADING transition, so resetting it here is harmless.
         lastTickRealtime = SystemClock.elapsedRealtime()
+        // FIX (audio focus): resume the secondary in lockstep with the primary.
+        // onPlaybackStopped() called secondary.pause() when the primary lost focus;
+        // this reverses that so both players restart together.
+        if (state == State.PREPARING || state == State.CROSSFADING) {
+            secondaryPlayer?.play()
+        }
         handler.postDelayed(tickRunnable, TICK_INTERVAL_MS)
     }
 
@@ -181,8 +200,15 @@ class CrossfadeManager {
     }
 
     /**
-     * Called when playback stops or pauses. Aborts any active crossfade unless
-     * the primary was intentionally silenced by the crossfade machinery itself.
+     * Called when playback stops or pauses. If a two-player crossfade is in
+     * progress the secondary is paused in lockstep so it does not run without
+     * audio focus or advance its position while the primary is frozen.
+     * [start] will resume the secondary when the primary regains focus.
+     *
+     * The crossfade state itself is preserved in PREPARING / CROSSFADING /
+     * COMPLETING so that the handoff can continue cleanly once focus returns.
+     * Only an IDLE stop (user pause, focus loss with no active crossfade) aborts
+     * any pending fade-in and resets the primary volume.
      */
     fun onPlaybackStopped() {
         stop()
@@ -191,7 +217,15 @@ class CrossfadeManager {
         // PREPARING: the primary may reach STATE_ENDED while the secondary is
         // still buffering; aborting here throws away the secondary and leaves
         // playback stopped with an empty queue (the items were already removed).
-        if (state == State.PREPARING || state == State.CROSSFADING || state == State.COMPLETING) return
+        if (state == State.PREPARING || state == State.CROSSFADING || state == State.COMPLETING) {
+            // FIX (audio focus): mirror the primary pause to the secondary.
+            // Without this, the secondary (which has no self-managed audio focus)
+            // keeps running while the primary is frozen by an OS focus event,
+            // causing it to advance its position and produce audio without focus.
+            // start() calls secondary.play() when the primary regains focus.
+            secondaryPlayer?.pause()
+            return
+        }
         abortCrossfade(); fadingIn = false; resetPrimaryVolume()
     }
 
