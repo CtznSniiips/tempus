@@ -908,7 +908,8 @@ object Preferences {
     fun setCrossfadeDurationSeconds(seconds: Int) {
         App.getInstance().preferences.edit().putInt(CROSSFADE_DURATION, seconds.coerceIn(0, 15)).apply()
 	}
-		
+
+	@JvmStatic	
     fun getTheme(): String {
         return App.getInstance().preferences.getString(THEME, "default") ?: "default"
     }
