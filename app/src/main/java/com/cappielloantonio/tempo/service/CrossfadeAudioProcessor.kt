@@ -45,12 +45,25 @@ import kotlin.math.sin
  *   1. Add one instance to DefaultAudioSink.Builder.setAudioProcessors().
  *   2. Pass the same instance to CrossfadeManager so it can arm the processor
  *      when position enters the crossfade window.
- *   3. CrossfadeManager sets [crossfadeDurationMs] after reading preferences;
- *      it sets [crossfadeArmed] just before the track transition flush fires.
+ *   3. CrossfadeManager sets [crossfadeDurationMs] eagerly via attach() and
+ *      keeps it current via tick(); it sets [crossfadeArmed] just before the
+ *      track transition flush fires.
  *
  * Supported formats: PCM_16BIT and PCM_FLOAT (interleaved, little-endian).
  * Other encodings are rejected via UnhandledAudioFormatException so ExoPlayer
  * can route around this processor (passthrough at the pipeline level).
+ *
+ * Threading notes:
+ *   [crossfadeDurationMs] and [crossfadeArmed] are @Volatile and written from
+ *   the main thread. All other state is owned by the ExoPlayer audio thread.
+ *
+ *   [isActive()] uses [cachedDurationMs] rather than [crossfadeDurationMs]
+ *   directly. [cachedDurationMs] is only committed inside onConfigure() and
+ *   onFlush() — moments where ExoPlayer already expects pipeline changes —
+ *   so the active state never flips mid-stream. This prevents ExoPlayer from
+ *   triggering a surprise pipeline rebuild (drain + AudioTrack restart) while
+ *   it is trying to set up a gapless transition, which would otherwise cause
+ *   playback to stop and leave the AudioTrack in a bad state.
  */
 @UnstableApi
 class CrossfadeAudioProcessor : BaseAudioProcessor() {
@@ -58,16 +71,18 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
     // ── External controls (written from main thread, read from playback thread)
 
     /**
-     * Crossfade duration in milliseconds. Set to 0 to disable (processor
-     * becomes inactive and ExoPlayer routes audio around it).
+     * Desired crossfade duration in milliseconds. CrossfadeManager writes this
+     * from the main thread. The value is latched into [cachedDurationMs] at the
+     * next onConfigure() or onFlush() call, after which it affects [isActive()]
+     * and the ring-buffer sizing. Set to 0 to disable crossfade.
      */
     @Volatile var crossfadeDurationMs: Long = 0L
 
     /**
-     * Armed by CrossfadeManager.tick() when the current track's remaining
-     * time falls within the crossfade window. The next flush() call uses this
-     * flag to decide whether to crossfade or just reset (seek/skip).
-     * Always reset to false inside onFlush().
+     * Armed by CrossfadeManager when the current track's remaining time falls
+     * within the crossfade window (or as a last-chance arm in onTrackTransition
+     * if the tick missed the window). The next flush() call uses this flag to
+     * decide whether to crossfade or just reset. Always reset inside onFlush().
      */
     @Volatile var crossfadeArmed: Boolean = false
 
@@ -77,6 +92,13 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
     private var state = State.DIRECT_PASSTHROUGH
 
     /**
+     * Latched copy of [crossfadeDurationMs], committed only at onConfigure()
+     * and onFlush() so that [isActive()] is stable between pipeline configure
+     * calls. See class-level kdoc for the rationale.
+     */
+    private var cachedDurationMs: Long = 0L
+
+    /**
      * Lookback ring buffer. In DIRECT_PASSTHROUGH this is written frame-by-
      * frame with the most recent audio; it is read (not written) in CROSSFADING.
      * Capacity is set to exactly crossfadeMs of audio for the current format.
@@ -84,7 +106,14 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
     private var ring      = ByteArray(0)
     private var ringHead  = 0      // oldest frame (read start in CROSSFADING)
     private var ringTail  = 0      // next write position
-    private var ringFill  = 0      // bytes currently valid in ring
+    private var _ringFill = 0      // bytes currently valid in ring
+
+    /**
+     * Exposed read-only to CrossfadeManager for its last-chance arm check in
+     * onTrackTransition(). Only read from the main thread after isPlaying
+     * transitions, which happens-after the audio thread writes it.
+     */
+    internal val ringFill: Int get() = _ringFill
 
     // Crossfade progress counters (in sample-frames, measured from the start
     // of the CROSSFADING state).
@@ -96,19 +125,39 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
     /**
      * Accept only PCM_16BIT and PCM_FLOAT. ExoPlayer will route around this
      * processor for other encodings (e.g. passthrough, encoded audio).
+     *
+     * Also commits [crossfadeDurationMs] → [cachedDurationMs] so that
+     * [isActive()] reflects the current preference at the moment ExoPlayer
+     * evaluates the processor chain.
      */
     override fun onConfigure(inputAudioFormat: AudioFormat): AudioFormat {
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT &&
             inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) {
             throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
         }
+        // Commit the desired duration so isActive() is correct for this
+        // configure() call. ExoPlayer evaluates isActive() immediately after
+        // onConfigure() to decide whether to include this processor in the
+        // active chain — this is the only safe place to update cachedDurationMs
+        // without risking a surprise mid-stream pipeline rebuild.
+        cachedDurationMs = crossfadeDurationMs
         return inputAudioFormat   // output format = input format (in-place processing)
     }
 
-    override fun isActive(): Boolean = crossfadeDurationMs > 0L
+    /**
+     * isActive() is based on [cachedDurationMs] (committed at configure/flush
+     * boundaries) rather than [crossfadeDurationMs] (written asynchronously by
+     * the main-thread tick). This ensures ExoPlayer never sees a spontaneous
+     * active-state change mid-stream that would force an unexpected AudioTrack
+     * drain and restart.
+     */
+    override fun isActive(): Boolean = cachedDurationMs > 0L
 
     /**
      * Called by ExoPlayer on track transitions AND on seeks.
+     *
+     * Commits [crossfadeDurationMs] → [cachedDurationMs] first, so the new
+     * preference takes effect for the incoming track.
      *
      * If [crossfadeArmed] is true and the ring has content: enter CROSSFADING
      * using the ring as track A's tail.
@@ -117,13 +166,17 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
      * in DIRECT_PASSTHROUGH. This produces a clean restart with zero latency.
      */
     override fun onFlush() {
+        // Latch the desired duration so any preference change made since the
+        // last configure/flush takes effect from the start of the new track.
+        cachedDurationMs = crossfadeDurationMs
+
         val armed = crossfadeArmed
         crossfadeArmed = false   // always consume the arm flag
 
-        if (armed && ringFill > 0) {
+        if (armed && _ringFill > 0) {
             state = State.CROSSFADING
             val bpf = bytesPerFrame()
-            xfadeFramesTotal = ringFill / bpf
+            xfadeFramesTotal = _ringFill / bpf
             xfadeFramesDone  = 0
         } else {
             clearRing()
@@ -133,7 +186,8 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
 
     override fun onReset() {
         clearRing()
-        crossfadeArmed = false
+        crossfadeArmed    = false
+        cachedDurationMs  = 0L
         state = State.DIRECT_PASSTHROUGH
     }
 
@@ -141,7 +195,7 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
         if (!input.hasRemaining()) return
 
         val bpf = bytesPerFrame()
-        val targetRingBytes = (crossfadeDurationMs *
+        val targetRingBytes = (cachedDurationMs *
                 inputAudioFormat.sampleRate / 1000L * bpf).toInt()
         ensureRingCapacity(targetRingBytes)
 
@@ -236,8 +290,8 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
         for (b in frame) {
             ring[ringTail] = b
             ringTail = (ringTail + 1) % cap
-            if (ringFill < cap) {
-                ringFill++
+            if (_ringFill < cap) {
+                _ringFill++
             } else {
                 // Ring is full: overwrite oldest byte, advance head
                 ringHead = (ringHead + 1) % cap
@@ -250,7 +304,7 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
         ringHead = (ringHead + 1) % ring.size
         val hi = ring[ringHead].toInt()
         ringHead = (ringHead + 1) % ring.size
-        ringFill -= 2
+        _ringFill -= 2
         return ((hi shl 8) or lo).toShort().toFloat()
     }
 
@@ -258,14 +312,14 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
         val bytes = ByteArray(4) {
             val b = ring[ringHead]
             ringHead = (ringHead + 1) % ring.size
-            ringFill--
+            _ringFill--
             b
         }
         return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).float
     }
 
     private fun clearRing() {
-        ringHead = 0; ringTail = 0; ringFill = 0
+        ringHead = 0; ringTail = 0; _ringFill = 0
         xfadeFramesTotal = 0; xfadeFramesDone = 0
     }
 
@@ -276,17 +330,17 @@ class CrossfadeAudioProcessor : BaseAudioProcessor() {
     private fun ensureRingCapacity(needed: Int) {
         if (needed <= ring.size) return
         val newRing = ByteArray(needed)
-        if (ringFill > 0) {
+        if (_ringFill > 0) {
             // Copy existing content in insertion order (head → tail)
-            val toHead = min(ringFill, ring.size - ringHead)
+            val toHead = min(_ringFill, ring.size - ringHead)
             ring.copyInto(newRing, 0, ringHead, ringHead + toHead)
-            if (toHead < ringFill) {
-                ring.copyInto(newRing, toHead, 0, ringFill - toHead)
+            if (toHead < _ringFill) {
+                ring.copyInto(newRing, toHead, 0, _ringFill - toHead)
             }
         }
         ring     = newRing
         ringHead = 0
-        ringTail = ringFill % newRing.size
+        ringTail = _ringFill % newRing.size
     }
 
     // ── Format helpers ────────────────────────────────────────────────────────
