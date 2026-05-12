@@ -53,14 +53,11 @@ open class BaseMediaService : MediaLibraryService() {
     protected lateinit var mediaLibrarySession: MediaLibrarySession
     private lateinit var networkCallback: CustomNetworkCallback
     private lateinit var equalizerManager: EqualizerManager
-    protected val crossfadeManager = CrossfadeManager()
-
-    /**
-     * Recycled ExoPlayer that alternates roles between crossfade cycles.
-     * After each crossfade the old primary is stopped, cleared, and parked here
-     * so the next crossfade can reuse it without a fresh allocation.
-     */
-    private var standbyPlayer: ExoPlayer? = null
+    // Single instance shared between CrossfadeManager (arming) and the
+    // DefaultAudioSink pipeline (audio processing). Must be declared before
+    // crossfadeManager so the constructor reference is valid.
+    protected val crossfadeAudioProcessor = CrossfadeAudioProcessor()
+    protected val crossfadeManager = CrossfadeManager(crossfadeAudioProcessor)
 
     /**
      * The listener currently installed on the active player. Tracked so it can
@@ -96,16 +93,14 @@ open class BaseMediaService : MediaLibraryService() {
     open fun playerInitHook() {
         initializeExoPlayer()
 
-        // Wire up the two-player crossfade machinery before any listener is attached.
+        // Attach the crossfade manager to the single ExoPlayer instance.
         crossfadeManager.attach(exoplayer)
-        crossfadeManager.secondaryPlayerFactory = ::createOrReclaimStandby
-        crossfadeManager.onCrossfadeComplete = ::completeCrossfadeSwitch
 
         initializeMediaLibrarySession(exoplayer)
         initializePlayerListener(exoplayer)
         // Assign the session player directly — setPlayer() is reserved for
-        // live player switches (Cast handoff, crossfade promotion) so that its
-        // queue-transfer logic isn't invoked on fresh startup.
+        // live player switches (Cast handoff) so that its queue-transfer
+        // logic isn't invoked on fresh startup.
         mediaLibrarySession.player = exoplayer
     }
 
@@ -475,8 +470,6 @@ open class BaseMediaService : MediaLibraryService() {
     }
 
     open fun releasePlayers() {
-        standbyPlayer?.release()
-        standbyPlayer = null
         exoplayer.release()
     }
 
@@ -535,6 +528,7 @@ open class BaseMediaService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setLoadControl(initializeLoadControl())
+            .experimentalSetDynamicSchedulingEnabled(true)
             .build()
 
         exoplayer.shuffleModeEnabled = Preferences.isShuffleModeEnabled()
@@ -790,111 +784,6 @@ open class BaseMediaService : MediaLibraryService() {
         return attached
     }
 
-    /**
-     * Builds a new ExoPlayer configured identically to the primary, except
-     * without self-managed audio focus (the MediaLibrarySession handles focus
-     * on behalf of whichever player is currently the session player).
-     */
-    private fun createSecondaryPlayer(): ExoPlayer {
-        return ExoPlayer.Builder(this)
-            .setRenderersFactory(getRenderersFactory())
-            .setMediaSourceFactory(getMediaSourceFactory())
-            .setAudioAttributes(AudioAttributes.DEFAULT, false)
-            .setHandleAudioBecomingNoisy(false)
-            .setWakeMode(C.WAKE_MODE_NETWORK)
-            .setLoadControl(initializeLoadControl())
-            .build()
-    }
-
-    /**
-     * Returns the [standbyPlayer] if one exists (stopped and cleared from the
-     * previous crossfade), otherwise allocates a fresh secondary ExoPlayer and
-     * parks it as the standby so it is ready for reuse after this cycle.
-     *
-     * Ownership of the returned instance is transferred to CrossfadeManager.
-     * [standbyPlayer] is nulled out so that a concurrent [setPlayer] call
-     * (e.g. Cast handoff) cannot release an ExoPlayer that is actively being
-     * used as the crossfade secondary.
-     */
-    private fun createOrReclaimStandby(): ExoPlayer {
-        val existing = standbyPlayer
-        return if (existing != null) {
-            standbyPlayer = null   // transfer ownership; prevent aliased release
-            existing
-        } else {
-            createSecondaryPlayer()
-        }
-    }
-
-    /**
-     * Promoted by [CrossfadeManager.onCrossfadeComplete] once the volume ramp
-     * has finished. Responsibility: transplant the remaining queue onto the
-     * secondary, flip the session player, recycle the old primary as the new
-     * standby, and call [CrossfadeManager.notifyHandoffComplete] so the manager
-     * can reset its internal state.
-     *
-     * @param secondary The ExoPlayer that just finished fading in (volume = 1).
-     * @param remaining Queue tail captured from the primary at crossfade-trigger
-     *                  time. Index 0 is the item [secondary] is already playing;
-     *                  indices 1..N must be appended so playback continues past
-     *                  the crossfaded track.
-     */
-    private fun completeCrossfadeSwitch(secondary: ExoPlayer, remaining: List<MediaItem>) {
-        val oldPrimary = exoplayer
-
-        // Append the rest of the queue (everything after the track secondary is
-        // already playing at index 0).
-        val extraItems = remaining.drop(1)
-        if (extraItems.isNotEmpty()) secondary.addMediaItems(extraItems)
-
-        // Mirror repeat / shuffle settings.
-        secondary.repeatMode = oldPrimary.repeatMode
-        secondary.shuffleModeEnabled = oldPrimary.shuffleModeEnabled
-
-        // Record the crossfaded-in track as the last seen item so that the next
-        // onTrackTransition correctly identifies consecutive-album neighbours.
-        previousMediaItem = secondary.currentMediaItem
-
-        // Record last-played timestamp for the newly active track.
-        MediaManager.setLastPlayedTimestamp(secondary.currentMediaItem)
-
-        // Swap the active listener: remove from old primary, install on secondary.
-        // This must happen before notifyHandoffComplete so that any late events
-        // from oldPrimary (e.g. onIsPlayingChanged after stop()) go nowhere.
-        initializePlayerListener(secondary)
-
-        // FIX (attach/notifyHandoffComplete ordering): notifyHandoffComplete MUST
-        // be called before attach(secondary). With the previous order, attach()
-        // found state == COMPLETING (not IDLE) and called abortCrossfade(), which
-        // queued stop() + clearMediaItems() on the secondary that was just being
-        // promoted — asynchronously killing playback a few milliseconds after the
-        // crossfade appeared to complete. Resetting state to IDLE first means
-        // attach() skips the abortCrossfade() branch entirely.
-        crossfadeManager.notifyHandoffComplete()
-        crossfadeManager.attach(secondary)
-
-        // Promote secondary to the session player.
-        mediaLibrarySession.player = secondary
-        exoplayer = secondary
-
-        // Park the old primary as the standby for the next crossfade cycle.
-        // It is already stopped (primary.stop() was called inside CrossfadeManager
-        // at volume = 0), so we just clear its queue.
-        oldPrimary.clearMediaItems()
-        standbyPlayer = oldPrimary
-
-        // Re-attach the equalizer to the new primary's audio session.
-        val audioSessionId = secondary.audioSessionId
-        if (audioSessionId != 0 && audioSessionId != -1) {
-            attachEqualizerIfPossible(audioSessionId)
-        }
-
-        updateWidget(secondary)
-
-        // Restart the tick so future crossfades are detected on the new primary.
-        if (secondary.isPlaying) crossfadeManager.start()
-    }
-
     private fun getRenderersFactory(): DefaultRenderersFactory {
         val extensionRendererMode = if (DownloadUtil.useExtensionRenderers())
             DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
@@ -911,8 +800,14 @@ open class BaseMediaService : MediaLibraryService() {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
             ): AudioSink {
+                // CrossfadeAudioProcessor must come AFTER ReplayGainProcessor so
+                // the gain-adjusted signal (not the raw signal) is what lands in
+                // the lookback ring and is used for the crossfade mix.
                 return DefaultAudioSink.Builder(context)
-                    .setAudioProcessors(arrayOf(ReplayGainUtil.getAudioProcessor()))
+                    .setAudioProcessors(arrayOf(
+                        ReplayGainUtil.getAudioProcessor(),
+                        crossfadeAudioProcessor
+                    ))
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                     .build()
