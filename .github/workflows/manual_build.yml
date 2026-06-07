@@ -1,0 +1,44 @@
+name: Manual APK Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache Gradle and wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build APKs
+        run: |
+          ./gradlew assembleTempusDebug assembleDegoogledDebug
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apks
+          path: |
+            app/build/outputs/apk/tempus/debug/*.apk
+            app/build/outputs/apk/degoogled/debug/*.apk
+          if-no-files-found: error
